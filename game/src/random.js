@@ -1,29 +1,27 @@
-// Azul Heat — random.js: a seeded mulberry32 generator. The whole city is built from
-// one seed, so ?seed=7 always raises the same Bahía Azul and staged screenshots are
-// reproducible frame for frame.
+// random.js — a tiny seeded RNG (mulberry32) so the city is identical
+// for every seed, which keeps the staged screenshots reproducible.
 
 export function makeRng(seed) {
   let a = (seed >>> 0) || 1;
-  const next = () => {
+  return function next() {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  next.range = (lo, hi) => lo + next() * (hi - lo);
-  next.int = (lo, hi) => Math.floor(next.range(lo, hi + 1));
-  next.pick = (arr) => arr[Math.floor(next() * arr.length)];
-  next.chance = (p) => next() < p;
-  return next;
 }
 
-/** The seed from the URL (?seed=), defaulting to 7. */
-export function urlSeed() {
-  const n = Number(new URLSearchParams(location.search).get('seed'));
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 7;
-}
-
-/** The staged scene name from ?shot=, or null for a normal game. */
-export function urlShot() {
-  return new URLSearchParams(location.search).get('shot');
+export function randRange(rng, lo, hi) { return lo + rng() * (hi - lo); }
+export function randInt(rng, lo, hi) { return Math.floor(randRange(rng, lo, hi + 1)); }
+export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length) % arr.length]; }
+export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
+export function angleTo(x1, y1, x2, y2) { return Math.atan2(y2 - y1, x2 - x1); }
+// Shortest signed turn from angle a toward angle b.
+export function angleDelta(a, b) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }

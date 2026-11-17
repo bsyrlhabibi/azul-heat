@@ -1,166 +1,146 @@
-// Azul Heat — police.js: the wanted system. Crimes add heat (more when a unit
-// witnesses them); heat becomes one to five stars. Patrol cars spawn off-screen and
-// pursue, roadblocks wait across the road at three stars, and at four a helicopter
-// holds its searchlight on you — inside the light your heat never cools. Break
-// sight, swap cars, and the stars fade.
+// police.js — the wanted system: crimes raise heat when witnessed, patrol
+// cars hunt the player, roadblocks wait at three stars, a helicopter's
+// searchlight pins the player at four, and standing still near a cop on
+// foot fills the bust meter.
 
-import { POLICE_COLOR } from './config.js';
-import { G } from './state.js';
-import { createCar, updateCar } from './vehicles.js';
-import { lineOfSight, randomRoadPoint } from './world.js';
-import { makeRng } from './random.js';
-import { damagePlayer } from './combat.js';
+import { PLACES } from './config.js';
+import { G, activeRunner, addFloater, addMessage } from './state.js';
+import { randomRoadPoint } from './world.js';
+import { makeCar, stepCar } from './vehicles.js';
+import { makeRng, clamp, dist, angleDelta } from './random.js';
+import { sfx } from './audio.js';
 
-const CRIMES = { carjack: 26, assault: 18, murder: 48, shots: 12, hitcar: 9, mission: 30 };
-const rng = makeRng(777);
-let lastKnown = null, swapCool = 0;
+const CRIMES = { carjack: 1.3, steal: 0.8, stealPolice: 2.1, assault: 0.9, shoot: 0.45, hitCar: 0.4, hitPed: 1.6, murder: 1.9, mission: 1.0 };
+let rng = makeRng(23);
+let lastCarId = null, blockTimer = 6, seenPos = null;
 
-export function starsFor(heat) { return heat <= 0 ? 0 : Math.min(5, 1 + Math.floor(heat / 45)); }
+export function stars() { return G.wanted.heat <= 0 ? 0 : Math.min(5, Math.ceil(G.wanted.heat)); }
 
-export function policeSeesPlayer() {
-  const p = G.player; if (!p) return false;
-  const pos = p.inCar || p;
-  if (G.police.heli && Math.hypot(G.police.heli.lx - pos.x, G.police.heli.ly - pos.y) < 125) return true;
-  for (const car of G.cars) {
-    if (car.kind !== 'police' || car.hp <= 0) continue;
-    const d = Math.hypot(car.x - pos.x, car.y - pos.y);
-    if (d < 560 && lineOfSight(G.world, car.x, car.y, pos.x, pos.y)) return true;
+export function reportCrime(kind, x, y) {
+  const base = CRIMES[kind] || 0.5;
+  let witnessed = false;
+  for (const u of G.police.units) if (dist(u.x, u.y, x, y) < 680) witnessed = true;
+  for (const p of G.peds) if (!p.down && dist(p.x, p.y, x, y) < 250) witnessed = true;
+  const before = stars();
+  G.wanted.heat = clamp(G.wanted.heat + base * (witnessed ? 1 : 0.35), 0, 5);
+  G.wanted.lastCrime = G.time;
+  if (stars() > before) addFloater(x, y - 34, '★'.repeat(stars()) + ' WANTED', '#ff5d5d');
+}
+
+function spawnUnit(tx, ty) {
+  let x = tx, y = ty, tries = 0;
+  while (tries++ < 8) {
+    const p = randomRoadPoint(rng);
+    const d = dist(p.x, p.y, tx, ty);
+    if (d > 560 && d < 900) { x = p.x; y = p.y; break; }
+    x = p.x; y = p.y;
   }
-  return false;
+  const car = makeCar('sedan', x, y, Math.atan2(ty - y, tx - x), { police: true, driver: 'police', color: '#eef1f4' });
+  car.ai = { mode: 'chase' };
+  G.cars.push(car); G.police.units.push(car);
+  return car;
 }
 
-export function addCrime(kind) {
-  const value = CRIMES[kind] || 10;
-  const seen = policeSeesPlayer();
-  G.police.heat = Math.min(230, G.police.heat + value * (seen ? 1 : 0.45));
-  G.police.stars = starsFor(G.police.heat);
-  if (G.police.stars > 0) { const p = G.player; lastKnown = { x: (p.inCar || p).x, y: (p.inCar || p).y }; }
+function removeUnit(car) {
+  car.dead = true;
+  G.police.units = G.police.units.filter((u) => u !== car);
+  G.cars = G.cars.filter((c) => c !== car);
 }
 
-/** Swapping into a fresh car with no unit watching throws off the trail. */
-export function noteCarSwap() {
-  if (G.police.heat > 0 && !policeSeesPlayer()) { G.police.unseenFor += 4; swapCool = 10; }
+export function clearPolice() {
+  for (const u of [...G.police.units]) removeUnit(u);
+  G.police.heli.active = false;
+  G.wanted.heat = 0; G.wanted.bust = 0; G.wanted.unseenFor = 0;
 }
 
-function spawnPatrol() {
-  const p = G.player; if (!p) return;
-  const pos = p.inCar || p;
-  for (let tries = 0; tries < 8; tries++) {
-    const pt = randomRoadPoint(rng);
-    const d = Math.hypot(pt.x - pos.x, pt.y - pos.y);
-    if (d < 640 || d > 980) continue;
-    const car = createCar('sedan', POLICE_COLOR, pt.x, pt.y, Math.atan2(pos.y - pt.y, pos.x - pt.x), 'police');
-    car.driver = 'police';
-    G.cars.push(car);
-    return;
-  }
-}
-
-function makeRoadblock() {
-  const p = G.player; if (!p || !p.inCar) return;
-  clearRoadblock();
-  const car = p.inCar;
-  const ahead = { x: car.x + Math.cos(car.angle) * 430, y: car.y + Math.sin(car.angle) * 430 };
-  for (const off of [-26, 26]) {
-    const b = createCar('sedan', POLICE_COLOR, ahead.x + Math.cos(car.angle + Math.PI / 2) * off, ahead.y + Math.sin(car.angle + Math.PI / 2) * off, car.angle + Math.PI / 2, 'police');
-    b.roadblock = true;
-    G.cars.push(b);
-  }
-}
-
-function clearRoadblock() {
-  for (const car of G.cars) if (car.roadblock) car.gone = true;
-  G.cars = G.cars.filter((c) => !c.gone);
+export function policeNearFactor() {
+  const r = activeRunner();
+  let best = 0;
+  for (const u of G.police.units) best = Math.max(best, 1 - dist(u.x, u.y, r.x, r.y) / 640);
+  return clamp(best, 0, 1);
 }
 
 export function updatePolice(dt) {
-  const pol = G.police, p = G.player;
-  if (!p) return;
-  const pos = p.inCar || p;
-  swapCool = Math.max(0, swapCool - dt);
-  const seen = policeSeesPlayer();
-  if (seen) { pol.unseenFor = 0; lastKnown = { x: pos.x, y: pos.y }; }
-  else pol.unseenFor += dt;
-  if (pol.unseenFor > 5 && pol.heat > 0) {
-    pol.heat = Math.max(0, pol.heat - dt * (swapCool > 0 ? 13 : 6.5));
-    pol.stars = starsFor(pol.heat);
-    if (pol.heat === 0) { clearRoadblock(); pol.heli = null; }
-  }
-  const want = pol.stars === 0 ? 0 : pol.stars + 1;
-  const active = G.cars.filter((c) => c.kind === 'police' && !c.roadblock);
-  pol.spawnT -= dt;
-  if (active.length < want && pol.spawnT <= 0) { spawnPatrol(); pol.spawnT = 2.2; }
-  if (pol.stars >= 3 && p.inCar && !G.cars.some((c) => c.roadblock)) makeRoadblock();
-  if (pol.stars < 3) clearRoadblock();
-  // Helicopter at four stars and up.
-  if (pol.stars >= 4) {
-    if (!pol.heli) pol.heli = { x: pos.x + 500, y: pos.y - 500, lx: pos.x, ly: pos.y };
-    const h = pol.heli;
-    const d = Math.hypot(pos.x - h.x, pos.y - h.y);
-    if (d > 30) { h.x += ((pos.x - h.x) / d) * 265 * dt; h.y += ((pos.y - h.y) / d) * 265 * dt; }
-    h.lx += (pos.x - h.lx) * Math.min(1, dt * 1.6);
-    h.ly += (pos.y - h.ly) * Math.min(1, dt * 1.6);
-  } else pol.heli = null;
-  // Pursuit driving.
-  pol.siren = false;
-  for (const car of active) {
-    const d = Math.hypot(car.x - pos.x, car.y - pos.y);
-    if (d < 900) pol.siren = true;
-    if (d > 1700 && pol.stars === 0) { car.gone = true; continue; }
-    if (car.hp <= 0) continue;
-    const target = seen || !lastKnown ? pos : lastKnown;
-    let tx = target.x, ty = target.y;
-    if (p.inCar) { tx += Math.cos(p.inCar.angle) * p.inCar.speed * 0.45; ty += Math.sin(p.inCar.angle) * p.inCar.speed * 0.45; }
-    const want2 = Math.atan2(ty - car.y, tx - car.x);
-    let diff = want2 - car.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    let throttle = 1;
-    if (!p.inCar && d < 52) throttle = 0; // pull up beside a runner on foot
-    if (Math.abs(diff) > 2.4) throttle = -0.7; // turned around: reverse out
-    updateCar(car, { throttle, steer: Math.max(-1, Math.min(1, diff * 2.6)), handbrake: Math.abs(diff) > 1.9 }, dt);
-    // Ramming a car hurts its driver a little; being boxed in on foot busts you.
-    if (p.inCar && d < 40 && Math.abs(car.speed) > 60) damagePlayer(2.2, car.x, car.y);
-  }
-  if (!p.inCar && pol.stars > 0) {
-    const near = active.some((c) => Math.hypot(c.x - p.x, c.y - p.y) < 58);
-    if (near && Math.abs(p.x) >= 0) pol.bust = Math.min(1, pol.bust + dt / 2.4);
-    else pol.bust = Math.max(0, pol.bust - dt * 0.7);
-    if (pol.bust >= 1 && G.screen === 'play') {
-      pol.bust = 0; pol.heat = 0; pol.stars = 0;
-      G.screen = 'busted';
-      G.message = 'The police boxed you in.';
-      G.cash = Math.max(0, G.cash - 150);
+  const r = activeRunner();
+  const st = stars();
+  const heli = G.police.heli;
+  // Who can see the player right now?
+  let seen = false;
+  for (const u of G.police.units) if (dist(u.x, u.y, r.x, r.y) < 430) seen = true;
+  if (heli.active && dist(heli.lightX, heli.lightY, r.x, r.y) < 125) seen = true;
+  G.wanted.seen = seen;
+  if (seen) { G.wanted.unseenFor = 0; seenPos = { x: r.x, y: r.y }; }
+  else G.wanted.unseenFor += dt;
+  // Swapping cars while unseen throws off the tail.
+  const curCarId = r.car ? r.car.id : null;
+  if (curCarId !== lastCarId) {
+    if (lastCarId !== null && G.wanted.unseenFor > 1.2 && G.wanted.heat > 0) {
+      G.wanted.heat = Math.max(0, G.wanted.heat - 0.7);
+      addFloater(r.x, r.y - 30, 'Lost them…', '#7bf1a8');
     }
-  } else pol.bust = Math.max(0, pol.bust - dt);
-  G.cars = G.cars.filter((c) => !c.gone);
-}
+    lastCarId = curCarId;
+  }
+  if (G.wanted.unseenFor > 4 && G.wanted.heat > 0) G.wanted.heat = Math.max(0, G.wanted.heat - dt * 0.085);
+  if (st === 0) { if (G.police.units.length) clearPolice(); return; }
 
-/** The helicopter and its searchlight, drawn above everything else. */
-export function drawHeli(c) {
-  const h = G.police.heli;
-  if (!h) return;
-  const p = G.player, pos = p.inCar || p;
-  const lit = Math.hypot(h.lx - pos.x, h.ly - pos.y) < 125;
-  c.save();
-  const grad = c.createRadialGradient(h.lx, h.ly, 10, h.lx, h.ly, 130);
-  grad.addColorStop(0, lit ? 'rgba(255,244,190,0.42)' : 'rgba(255,244,190,0.25)');
-  grad.addColorStop(1, 'rgba(255,244,190,0)');
-  c.fillStyle = grad;
-  c.beginPath(); c.moveTo(h.x, h.y); c.lineTo(h.lx - 95, h.ly + 60); c.lineTo(h.lx + 95, h.ly + 60); c.closePath(); c.fill();
-  c.beginPath(); c.arc(h.lx, h.ly, 118, 0, Math.PI * 2); c.fill();
-  // Body, offset up-left so its shadow reads as altitude.
-  c.fillStyle = 'rgba(40,16,40,0.25)';
-  c.beginPath(); c.ellipse(h.x + 26, h.y + 34, 30, 13, 0.4, 0, Math.PI * 2); c.fill();
-  c.translate(h.x, h.y); c.rotate(Math.atan2(pos.y - h.y, pos.x - h.x));
-  c.fillStyle = '#20242c';
-  c.beginPath(); c.roundRect(-24, -10, 48, 20, 9); c.fill();
-  c.fillRect(16, -3, 26, 6);
-  c.fillStyle = '#7fd4e8'; c.beginPath(); c.roundRect(8, -7, 12, 14, 4); c.fill();
-  const sweep = Math.sin(G.time * 28) * 4;
-  c.strokeStyle = 'rgba(20,20,20,0.85)'; c.lineWidth = 3;
-  c.beginPath(); c.moveTo(0, -34 + sweep); c.lineTo(0, 34 - sweep); c.stroke();
-  c.fillStyle = Math.floor(G.time * 5) % 2 ? '#ff3b30' : '#7a1d18';
-  c.beginPath(); c.arc(-18, 0, 3.4, 0, Math.PI * 2); c.fill();
-  c.restore();
+  // Keep the pressure at stars+1 units.
+  const want = Math.min(6, st + 1);
+  if (G.police.units.length < want) spawnUnit(r.x, r.y);
+  for (const u of [...G.police.units]) if (dist(u.x, u.y, r.x, r.y) > 1600 || u.dead) removeUnit(u);
+
+  // Roadblocks at three stars and up: two cruisers parked across the road ahead.
+  blockTimer -= dt;
+  if (st >= 3 && blockTimer <= 0 && r.car) {
+    blockTimer = 16;
+    const ahead = 460, a = r.car.angle;
+    const bx = r.x + Math.cos(a) * ahead, by = r.y + Math.sin(a) * ahead;
+    for (const off of [-26, 26]) {
+      const car = makeCar('sedan', bx + Math.cos(a + Math.PI / 2) * off, by + Math.sin(a + Math.PI / 2) * off, a + Math.PI / 2, { police: true, driver: 'police', color: '#eef1f4' });
+      car.ai = { mode: 'block', until: G.time + 18 };
+      G.cars.push(car); G.police.units.push(car);
+    }
+    addMessage('Scanner', 'Roadblock reported ahead of the suspect.');
+  }
+
+  for (const u of G.police.units) {
+    if (u.ai.mode === 'block') {
+      if (G.time > u.ai.until) u.ai.mode = 'chase';
+      continue;
+    }
+    const target = seen || G.wanted.unseenFor < 3 ? { x: r.x, y: r.y } : (seenPos || { x: r.x, y: r.y });
+    const desired = Math.atan2(target.y - u.y, target.x - u.x);
+    const steer = clamp(angleDelta(u.angle, desired) * 2.6, -1, 1);
+    const d = dist(u.x, u.y, target.x, target.y);
+    const throttle = d > 60 ? 1 : (r.car ? 0.4 : -0.4);
+    stepCar(u, dt, { throttle, steer, handbrake: false }, 1.06, 1);
+  }
+
+  // Helicopter at four stars: it orbits and drags its light over the player.
+  heli.active = st >= 4;
+  if (heli.active) {
+    const tx = r.x + Math.cos(G.time * 0.6) * 90, ty = r.y + Math.sin(G.time * 0.6) * 90 - 30;
+    heli.x += (tx - heli.x) * Math.min(1, dt * 1.6);
+    heli.y += (ty - heli.y) * Math.min(1, dt * 1.6);
+    heli.angle = Math.atan2(r.y - heli.y, r.x - heli.x);
+    heli.lightX += (r.x - heli.lightX) * Math.min(1, dt * 2.2);
+    heli.lightY += (r.y - heli.lightY) * Math.min(1, dt * 2.2);
+  }
+
+  // Bust: a runner on foot, cornered and slow, gets cuffed.
+  if (!r.car && st > 0) {
+    let near = false;
+    for (const u of G.police.units) if (dist(u.x, u.y, r.x, r.y) < 64) near = true;
+    if (near) {
+      G.wanted.bust += dt / 2.4;
+      if (G.wanted.bust >= 1) {
+        const fine = Math.round(G.cash * 0.12);
+        G.cash -= fine;
+        clearPolice();
+        r.x = PLACES.policeHQ.x; r.y = PLACES.policeHQ.y + 60;
+        G.screen = 'busted'; G.deadT = 0;
+        addMessage('Bahía PD', `Released after a $${fine} fine. Keep it clean out there.`);
+        sfx.fail();
+      }
+    } else G.wanted.bust = Math.max(0, G.wanted.bust - dt * 0.7);
+  } else G.wanted.bust = Math.max(0, G.wanted.bust - dt * 0.7);
 }

@@ -1,66 +1,52 @@
-// Azul Heat — phone.js: the in-game phone. Contacts send their mission offers and
-// reactions here; a toast slides in when a message lands, and T opens the phone to
-// read the thread, see your contacts and check your standing in the city.
+// phone.js — the in-game phone: a message feed from contacts and the
+// city, opened with T. Messages arrive from story.js, gigs and police.
 
+import { VIEW_W, VIEW_H } from './config.js';
 import { G } from './state.js';
-import { CONTACTS } from './missions.js';
-import { repTotal } from './economy.js';
-import { sfx } from './audio.js';
+import { roundRect } from './vehicles.js';
 
-export const phoneLog = [
-  { from: 'Tía Carmen', text: 'Lucía arrives Thursday. Marco — keep the garage ready. — C.' },
-];
-
-export function sendMessage(from, text) {
-  phoneLog.push({ from, text });
-  if (phoneLog.length > 14) phoneLog.shift();
-  G.phoneMsg = { from, text, until: G.time + 4.6 };
-  sfx.pickup();
-}
-
-export function drawPhone(c, w, h) {
-  c.save();
-  c.fillStyle = 'rgba(10,6,16,0.55)';
-  c.fillRect(0, 0, w, h);
-  const pw = 342, ph = 560, x = w - pw - 26, y = (h - ph) / 2;
-  c.fillStyle = '#14161f';
-  c.beginPath(); c.roundRect(x, y, pw, ph, 26); c.fill();
-  c.fillStyle = '#1f2432';
-  c.beginPath(); c.roundRect(x + 8, y + 8, pw - 16, ph - 16, 20); c.fill();
-  c.fillStyle = '#e8f4f8'; c.font = 'bold 17px system-ui'; c.textAlign = 'left';
-  c.fillText('📱  Bahía Azul — Messages', x + 22, y + 38);
-  c.font = '12px system-ui'; c.fillStyle = '#9fb4c0';
-  c.fillText(`Cash $${G.cash} · Rep ${repTotal()} · Missions ${G.missionsDone.length}/6`, x + 22, y + 58);
-  let cy = y + 84;
-  for (const msg of phoneLog.slice(-7)) {
-    c.fillStyle = '#ffd75e'; c.font = 'bold 12.5px system-ui';
-    c.fillText(msg.from, x + 22, cy);
-    c.fillStyle = '#dfe9ee'; c.font = '12.5px system-ui';
-    cy += 16;
-    for (const line of wrapText(c, msg.text, pw - 44)) { c.fillText(line, x + 22, cy); cy += 15; }
-    cy += 10;
-    if (cy > y + ph - 120) break;
+export function drawPhone(ctx) {
+  const w = 400, h = 560, x = (VIEW_W - w) / 2, y = (VIEW_H - h) / 2;
+  ctx.fillStyle = 'rgba(8,8,16,0.45)';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillStyle = '#12141f';
+  roundRect(ctx, x, y, w, h, 26); ctx.fill();
+  ctx.strokeStyle = '#3d4457'; ctx.lineWidth = 2; roundRect(ctx, x, y, w, h, 26); ctx.stroke();
+  ctx.fillStyle = '#0a0c12'; roundRect(ctx, x + 130, y + 10, 140, 18, 9); ctx.fill();
+  ctx.fillStyle = '#ffd23f';
+  ctx.font = 'bold 21px system-ui'; ctx.textAlign = 'left';
+  ctx.fillText('📱 Bahía Phone', x + 24, y + 62);
+  ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui';
+  ctx.fillText(G.runners[G.active].name + ' · $' + G.cash, x + 24, y + 86);
+  const msgs = G.messages.slice(-9);
+  let cy = y + 116;
+  if (!msgs.length) {
+    ctx.fillStyle = '#c8cede'; ctx.font = '15px system-ui';
+    ctx.fillText('No messages yet. Gold markers on the map mean work.', x + 24, cy);
   }
-  c.fillStyle = '#9fb4c0'; c.font = 'bold 12px system-ui';
-  c.fillText('CONTACTS', x + 22, y + ph - 92);
-  c.font = '12.5px system-ui'; c.fillStyle = '#dfe9ee';
-  Object.values(CONTACTS).forEach((ct, i) => {
-    c.fillText(`● ${ct.name} — ${['the Marina', 'Plaza Vieja', 'the Neon Strip'][i]}`, x + 22, y + ph - 70 + i * 17);
-  });
-  c.fillStyle = '#7e93a0'; c.font = '11.5px system-ui';
-  c.fillText('T or Esc — put the phone away', x + 22, y + ph - 14);
-  c.restore();
+  for (const m of msgs) {
+    ctx.fillStyle = '#1d2231'; roundRect(ctx, x + 16, cy - 16, w - 32, 52, 10); ctx.fill();
+    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 13px system-ui';
+    ctx.fillText(m.from, x + 26, cy + 2);
+    ctx.fillStyle = '#e6e9f2'; ctx.font = '13.5px system-ui';
+    wrapText(ctx, m.text, x + 26, cy + 20, w - 52, 16, 2);
+    cy += 60;
+  }
+  ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('T / Esc — put the phone away', x + w / 2, y + h - 18);
+  ctx.textAlign = 'left';
 }
 
-export function wrapText(c, text, maxWidth) {
+export function wrapText(ctx, text, x, y, maxW, lineH, maxLines) {
   const words = text.split(' ');
-  const lines = [];
-  let line = '';
+  let line = '', lines = 0;
   for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (c.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
-    else line = test;
+    const test = line ? line + ' ' + word : word;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, y + lines * lineH);
+      lines++; line = word;
+      if (lines >= maxLines) return;
+    } else line = test;
   }
-  if (line) lines.push(line);
-  return lines;
+  if (lines < maxLines) ctx.fillText(line, x, y + lines * lineH);
 }

@@ -1,90 +1,104 @@
-// Azul Heat — pedestrians.js: the people of Bahía Azul. Walkers stroll the sidewalk
-// strips along the block edges, flee from danger, and a few are thugs who swing at
-// the player when a mission asks for a fight. Contacts (Tía Carmen and friends) are
-// pedestrians who stand at their spot and wait to talk.
+// pedestrians.js — ambient citizens strolling the sidewalks and the beach
+// promenade. They flee gunfire and crashes, and drawFigure() here is the
+// shared renderer for every human in the game (runners, contacts, thugs).
 
-import { ROADS_X, ROADS_Y, WORLD_W, WORLD_H } from './config.js';
+import { ROADS_V, ROADS_H, ROAD_W, WORLD_H, WORLD_W } from './config.js';
 import { G } from './state.js';
-import { makeRng } from './random.js';
-import { collideCircle, onRoad } from './world.js';
-import { drawPerson } from './characters.js';
-import { damagePlayer } from './combat.js';
+import { collideCircle } from './world.js';
+import { makeRng, pick, randRange, clamp, dist } from './random.js';
+import { roundRect } from './vehicles.js';
 
-const rng = makeRng(90210);
-const SKINS = ['#f2c79b', '#d99e63', '#b06a3b', '#8a5426', '#6e4423'];
-const SHIRTS = ['#e67e22', '#ecf0f1', '#16a085', '#8e44ad', '#d35400', '#2980b9', '#c0392b', '#f1c40f', '#27ae60', '#fd79a8'];
-let nextId = 1;
+const SIDE = ROAD_W / 2 + 17;
+const LINES_V = [...ROADS_V.map((x) => x - SIDE), ...ROADS_V.map((x) => x + SIDE), 272];
+const LINES_H = [...ROADS_H.map((y) => y - SIDE), ...ROADS_H.map((y) => y + SIDE)];
+const SKINS = ['#a0663a', '#7c4b26', '#c98d54', '#8a5a30', '#e0ac82', '#5e3a1e'];
+const TOPS = ['#ef476f', '#ffd166', '#06d6a0', '#118ab2', '#f78c6b', '#9b5de5', '#f4f1e6', '#2a9d8f'];
+const BOTTOMS = ['#27324a', '#3a3230', '#4a4e69', '#22242c', '#5e503f'];
 
-export function spawnPed(x, y, opts = {}) {
-  const ped = {
-    id: nextId++, x, y, angle: rng.range(0, Math.PI * 2), walk: rng.range(0, 6), moving: false,
-    skin: rng.pick(SKINS), hair: rng.pick(['#1c1210', '#4a2c14', '#777', '#c9a227', '#222']),
-    shirt: opts.shirt || rng.pick(SHIRTS), shirt2: opts.shirt || '#555', pants: rng.pick(['#2c3e50', '#5d4a36', '#34495e', '#1a1a2e']),
-    kind: opts.kind || 'walker', // walker | contact | thug
-    name: opts.name || null, flee: !!opts.flee, hp: opts.kind === 'thug' ? 45 : 20,
-    tx: x, ty: y, retarget: 0, hitT: 0, dead: false,
+let rng = makeRng(5);
+
+export function makePed(x, y, opts = {}) {
+  return {
+    x, y, angle: randRange(rng, 0, Math.PI * 2), walk: randRange(rng, 0, 6),
+    speed: randRange(rng, 40, 62), wp: null, flee: 0, fleeFrom: null, hp: 100,
+    skin: opts.skin || pick(rng, SKINS), top: opts.top || pick(rng, TOPS),
+    bottom: opts.bottom || pick(rng, BOTTOMS), hair: opts.hair || pick(rng, ['#14100c', '#2b1a10', '#4a2f1a', '#e8e2d4', '#701f28']),
+    panic: false, down: false,
   };
-  ped.shirt2 = ped.shirt;
-  G.peds.push(ped);
-  return ped;
 }
 
-/** Keep a living crowd around the player: spawn on sidewalks, cull the far ones. */
-export function populatePeds(dt) {
-  const p = G.player;
-  if (!p) return;
-  G.peds = G.peds.filter((ped) => {
-    const d = Math.hypot(ped.x - p.x, ped.y - p.y);
-    if (ped.dead) return d < 800; // corpses linger a while, then the city tidies up
-    return ped.kind !== 'walker' || d < 1200;
-  });
-  const walkers = G.peds.filter((ped) => ped.kind === 'walker').length;
-  if (walkers < 26 && rng.chance(dt * 6)) {
-    // A sidewalk point: just inside a block edge, near the player but off-screen.
-    const a = rng.range(0, Math.PI * 2), d = rng.range(430, 700);
-    let x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
-    if (x < 20 || y < 20 || x > WORLD_W - 20 || y > WORLD_H - 20) return;
-    if (onRoad(x, y)) { x += 74; }
-    const fixed = collideCircle(G.world, x, y, 11);
-    spawnPed(fixed.x, fixed.y);
+function newWaypoint(p) {
+  if (rng() < 0.5) { const x = pick(rng, LINES_V); p.wp = { x, y: clamp(p.y + randRange(rng, -700, 700), 30, WORLD_H - 30) }; }
+  else { const y = pick(rng, LINES_H); p.wp = { x: clamp(p.x + randRange(rng, -700, 700), 260, WORLD_W - 30), y }; }
+}
+
+export function initPeds(seed) {
+  rng = makeRng(seed * 17 + 3);
+  for (let i = 0; i < 42; i++) {
+    const onV = rng() < 0.55;
+    const x = onV ? pick(rng, LINES_V) : randRange(rng, 280, WORLD_W - 60);
+    const y = onV ? randRange(rng, 40, WORLD_H - 40) : pick(rng, LINES_H);
+    const p = makePed(x, y);
+    newWaypoint(p);
+    G.peds.push(p);
   }
+}
+
+export function panicNear(x, y, radius) {
+  for (const p of G.peds) if (!p.down && dist(p.x, p.y, x, y) < radius) { p.flee = randRange(rng, 2, 4); p.fleeFrom = { x, y }; }
+  for (const e of G.enemies) if (!e.down && dist(e.x, e.y, x, y) < radius && !e.hostile) { e.flee = 2; e.fleeFrom = { x, y }; }
 }
 
 export function updatePeds(dt) {
-  const p = G.player;
-  for (const ped of G.peds) {
-    if (ped.dead) continue;
-    ped.moving = false;
-    if (ped.hitT > 0) ped.hitT -= dt;
-    if (ped.kind === 'contact') continue;
-    let tx = ped.tx, ty = ped.ty, speed = 62;
-    if (ped.flee) {
-      const from = p ? { x: p.x, y: p.y } : { x: 0, y: 0 };
-      tx = ped.x + (ped.x - from.x); ty = ped.y + (ped.y - from.y); speed = 205;
-      if (Math.hypot(ped.x - from.x, ped.y - from.y) > 420) ped.flee = false;
-    } else if (ped.kind === 'thug' && p && !p.inCar) {
-      tx = p.x; ty = p.y; speed = 148;
-      const d = Math.hypot(p.x - ped.x, p.y - ped.y);
-      if (d < 26 && ped.hitT <= 0) { ped.hitT = 0.8; damagePlayer(7, ped.x, ped.y); }
-    } else {
-      ped.retarget -= dt;
-      if (ped.retarget <= 0 || Math.hypot(tx - ped.x, ty - ped.y) < 8) {
-        ped.retarget = rng.range(3, 8);
-        // Stroll along the block edge: pick a point on a nearby road's sidewalk.
-        const vertical = rng.chance(0.5);
-        if (vertical) { ped.tx = (rng.pick(ROADS_X) + (rng.chance(0.5) ? 74 : -74)); ped.ty = Math.max(20, Math.min(WORLD_H - 20, ped.y + rng.range(-320, 320))); }
-        else { ped.tx = Math.max(20, Math.min(WORLD_W - 60, ped.x + rng.range(-320, 320))); ped.ty = (rng.pick(ROADS_Y) + (rng.chance(0.5) ? 74 : -74)); }
-        tx = ped.tx; ty = ped.ty;
+  for (const list of [G.peds, G.enemies]) {
+    for (const p of list) {
+      if (p.down) continue;
+      let tx, ty, spd = p.speed;
+      if (p.flee > 0 && p.fleeFrom) {
+        p.flee -= dt;
+        const a = Math.atan2(p.y - p.fleeFrom.y, p.x - p.fleeFrom.x);
+        tx = p.x + Math.cos(a) * 90; ty = p.y + Math.sin(a) * 90; spd = 138;
+      } else if (p.hostile) {
+        continue; // hostile thugs are driven by combat.js
+      } else {
+        if (!p.wp || dist(p.x, p.y, p.wp.x, p.wp.y) < 12) newWaypoint(p);
+        tx = p.wp.x; ty = p.wp.y;
       }
+      const a = Math.atan2(ty - p.y, tx - p.x);
+      p.angle = a;
+      const res = collideCircle(p.x + Math.cos(a) * spd * dt, p.y + Math.sin(a) * spd * dt, 7);
+      p.x = res.x; p.y = res.y;
+      p.walk += dt * spd * 0.11;
     }
-    const dx = tx - ped.x, dy = ty - ped.y, d = Math.hypot(dx, dy);
-    if (d > 4) {
-      const step = Math.min(d, speed * dt);
-      const fixed = collideCircle(G.world, ped.x + (dx / d) * step, ped.y + (dy / d) * step, 10);
-      ped.x = fixed.x; ped.y = fixed.y;
-      ped.angle = Math.atan2(dy, dx); ped.walk += dt * 9; ped.moving = true;
-    }
+  }
+  // Fallen pedestrians fade out and are replaced by fresh citizens elsewhere.
+  for (let i = G.peds.length - 1; i >= 0; i--) {
+    const p = G.peds[i];
+    if (p.down) { p.fade = (p.fade ?? 1) - dt * 0.25; if (p.fade <= 0) { G.peds.splice(i, 1); const np = makePed(randRange(rng, 300, WORLD_W - 100), randRange(rng, 60, WORLD_H - 60)); newWaypoint(np); G.peds.push(np); } }
   }
 }
 
-export function drawPed(c, ped) { drawPerson(c, ped); }
+// An upright little person, drawn 3/4: soft shadow, swinging legs and arms,
+// shaded torso, head with hair. `s` scales the figure (runners are bigger).
+export function drawFigure(ctx, x, y, angle, walk, pal, s = 1) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(46,16,44,0.28)';
+  ctx.beginPath(); ctx.ellipse(3.5, 3, 9 * s, 4.4 * s, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.rotate(angle + Math.PI / 2);
+  const sw = Math.sin(walk) * 3.4 * s;
+  ctx.fillStyle = pal.bottom;
+  ctx.fillRect(-4.6 * s + 0, -1 * s + Math.max(0, sw), 3.6 * s, 7.5 * s);   // legs (stride offset on y)
+  ctx.fillRect(1 * s, -1 * s + Math.max(0, -sw), 3.6 * s, 7.5 * s);
+  ctx.fillStyle = pal.top;
+  roundRect(ctx, -6.4 * s, -10.5 * s, 12.8 * s, 11.5 * s, 4 * s); ctx.fill();
+  ctx.fillStyle = pal.bottom;
+  ctx.fillRect(-8.6 * s, -9.5 * s + sw * 0.5, 2.8 * s, 8 * s);              // arms
+  ctx.fillRect(5.8 * s, -9.5 * s - sw * 0.5, 2.8 * s, 8 * s);
+  if (pal.accent) { ctx.fillStyle = pal.accent; ctx.fillRect(-6.4 * s, -4.5 * s, 12.8 * s, 2.2 * s); }
+  ctx.fillStyle = pal.skin;
+  ctx.beginPath(); ctx.arc(0, -13.6 * s, 4.9 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = pal.hair;
+  ctx.beginPath(); ctx.arc(0, -14.6 * s, 4.9 * s, Math.PI, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}

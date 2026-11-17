@@ -1,97 +1,69 @@
-// Azul Heat — economy.js: money, reputation and the places that take both. Missions
-// and gigs pay cash and district reputation; gun shops sell armour and ammunition;
-// the Palm Hills safehouse heals, saves, and its garage stores one car for you.
+// economy.js — money and reputation flow, the Ammu-Nación gun shops, and
+// the safehouse services: rest (heal + save) and the one-car garage.
 
-import { G } from './state.js';
-import { districtAt } from './world.js';
-import { createCar } from './vehicles.js';
-import { exitCar } from './characters.js';
+import { PLACES } from './config.js';
+import { G, activeRunner, addFloater } from './state.js';
+import { makeCar } from './vehicles.js';
+import { dist } from './random.js';
 import { saveGame } from './save.js';
 import { sfx } from './audio.js';
 
-export function addCash(n) {
+export function addCash(n, x, y) {
   G.cash += n;
-  if (n > 0) sfx.cash();
+  if (n > 0) { G.stats.earned += n; addFloater(x, y - 30, `+$${n}`, '#7bf1a8'); sfx.cash(); }
+}
+export function addRep(district, n) {
+  G.rep[district] = Math.min(100, (G.rep[district] || 0) + n);
 }
 
-export function addRep(x, y, n) {
-  const d = districtAt(x, y);
-  G.rep[d.id] = Math.min(100, (G.rep[d.id] || 0) + n);
+export const SHOP_ITEMS = [
+  { name: 'Body Armor', price: 150, desc: 'Full armor plate', apply(r) { r.armor = 100; } },
+  { name: 'Pistol Ammo ×24', price: 40, desc: 'Two spare magazines', apply(r) { r.ammo += 24; } },
+  { name: 'Empanada', price: 25, desc: 'Hot, greasy, heals 45', apply(r) { r.hp = Math.min(100, r.hp + 45); } },
+];
+
+export function buyItem(i) {
+  const item = SHOP_ITEMS[i];
+  const r = activeRunner();
+  if (!item) return;
+  if (G.cash < item.price) { addFloater(r.x, r.y - 26, 'NOT ENOUGH CASH', '#ff5d5d'); sfx.fail(); return; }
+  G.cash -= item.price;
+  item.apply(r);
+  addFloater(r.x, r.y - 26, item.name, '#7bf1a8');
+  sfx.cash();
 }
 
-export function repTotal() {
-  return Object.values(G.rep).reduce((a, b) => a + b, 0);
-}
-
-function near(x, y, d) {
-  const p = G.player;
-  const pos = p.inCar || p;
-  return Math.hypot(pos.x - x, pos.y - y) < d;
-}
-
-export function economyPrompt() {
-  const p = G.player;
-  for (const shop of G.world.gunShops) {
-    if (near(shop.x, shop.y, 46) && !p.inCar) {
-      return p.armor < 100 && G.cash >= 250 ? `E — buy armour ($250) at ${shop.name}` : `E — buy ammo ×24 ($60) at ${shop.name}`;
+// Rest at the safehouse: heal, write the save, and roll the garage car out
+// if one is stored and the drive is empty.
+export function useSafehouse() {
+  const r = activeRunner();
+  r.hp = 100;
+  saveGame();
+  addFloater(r.x, r.y - 28, 'RESTED · SAVED', '#7bf1a8');
+  sfx.complete();
+  if (G.garage) {
+    const g = PLACES.garage;
+    const near = G.cars.some((c) => dist(c.x, c.y, g.x, g.y) < 60);
+    if (!near) {
+      const car = makeCar(G.garage.model, g.x, g.y, 0, { color: G.garage.color });
+      car.hp = G.garage.hp; car.stolen = true;
+      G.cars.push(car);
+      addFloater(g.x, g.y - 24, `Your ${car.def.name} is out front`, '#ffd23f');
     }
   }
-  const sh = G.world.safehouse;
-  if (p.inCar && near(sh.garage.x + sh.garage.w / 2, sh.garage.y + sh.garage.h / 2, 90)) return 'E — store this car in your garage';
-  if (!p.inCar && G.garageCar && near(sh.garage.x + sh.garage.w / 2, sh.garage.y + sh.garage.h / 2, 80)) return `E — take your ${G.garageCar.modelId} from the garage`;
-  if (!p.inCar && near(sh.x, sh.y, 46)) return 'E — rest at the safehouse (heal + save)';
-  return null;
 }
 
-/** The E key at a shop or the safehouse. True if it was used. */
-export function tryEconomyInteract() {
-  const p = G.player;
-  for (const shop of G.world.gunShops) {
-    if (near(shop.x, shop.y, 46) && !p.inCar) {
-      if (p.armor < 100 && G.cash >= 250) { G.cash -= 250; p.armor = 100; sfx.pickup(); return true; }
-      if (G.cash >= 60) { G.cash -= 60; G.ammo += 24; sfx.pickup(); return true; }
-      G.banner = { title: 'NOT ENOUGH CASH', sub: `${shop.name} — armour $250, ammo $60`, until: G.time + 1.6 };
-      return true;
-    }
-  }
-  const sh = G.world.safehouse;
-  const gx = sh.garage.x + sh.garage.w / 2, gy = sh.garage.y + sh.garage.h / 2;
-  if (p.inCar && near(gx, gy, 90)) {
-    G.garageCar = { modelId: p.inCar.model.id, color: p.inCar.color };
-    const car = p.inCar;
-    exitCar(p);
-    car.gone = true;
-    G.cars = G.cars.filter((c) => !c.gone);
-    saveGame();
-    G.banner = { title: 'CAR STORED', sub: 'It will be waiting in this garage.', until: G.time + 1.8 };
-    return true;
-  }
-  if (!p.inCar && G.garageCar && near(gx, gy, 80)) {
-    const car = createCar(G.garageCar.modelId, G.garageCar.color, gx, gy, -Math.PI / 2, 'parked');
-    G.cars.push(car);
-    G.garageCar = null;
-    saveGame();
-    return true;
-  }
-  if (!p.inCar && near(sh.x, sh.y, 46)) {
-    p.hp = 100;
-    saveGame();
-    G.banner = { title: 'SAFEHOUSE', sub: 'Rested, healed and saved.', until: G.time + 1.6 };
-    sfx.pickup();
-    return true;
-  }
-  return false;
-}
-
-/** Wake up at the hospital after a wasted/busted screen: poorer, healed, heat gone. */
-export function respawn() {
-  const p = G.player;
-  if (p.inCar) exitCar(p);
-  p.x = G.world.hospital.x; p.y = G.world.hospital.y;
-  p.hp = 100; p.armor = 0;
-  G.police.heat = 0; G.police.stars = 0; G.police.heli = null; G.police.bust = 0;
-  if (G.mission) { G.mission = null; }
-  if (G.gig) { G.gig = null; }
-  G.objective = '';
-  G.screen = 'play';
+// Store the car you are driving in the garage (one slot).
+export function storeCarInGarage() {
+  const r = activeRunner();
+  const car = r.car;
+  if (!car) return;
+  if (car.missionCar) { addFloater(r.x, r.y - 26, "Can't store a job car", '#ff5d5d'); return; }
+  G.garage = { model: car.model, color: car.color, hp: Math.max(20, car.hp) };
+  G.cars = G.cars.filter((c) => c !== car);
+  r.car = null;
+  r.x = PLACES.garage.x + 40; r.y = PLACES.garage.y + 26;
+  addFloater(r.x, r.y - 26, 'CAR STORED', '#7bf1a8');
+  saveGame();
+  sfx.click();
 }

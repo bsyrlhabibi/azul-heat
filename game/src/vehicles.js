@@ -1,124 +1,154 @@
-// Azul Heat — vehicles.js: the cars of Bahía Azul. One factory makes every car
-// (traffic, parked, police, the player's), one arcade physics step drives them all —
-// velocity split into forward and lateral parts so a handbrake drops the lateral
-// grip and the car drifts — and one painter draws them with damage smoke and all.
+// vehicles.js — car factory, arcade driving physics (with handbrake drift),
+// collision damage, smoke, and the top-down car renderer with dusk lights.
 
-import { CAR_MODELS, POLICE_COLOR } from './config.js';
+import { CAR_MODELS } from './config.js';
 import { G } from './state.js';
 import { collideCircle } from './world.js';
+import { clamp } from './random.js';
 import { sfx } from './audio.js';
 
-let nextId = 1;
+export function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = clamp(Math.round(((n >> 16) & 255) * f), 0, 255);
+  const g = clamp(Math.round(((n >> 8) & 255) * f), 0, 255);
+  const b = clamp(Math.round((n & 255) * f), 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
 
-export function createCar(modelId, color, x, y, angle, kind) {
-  const model = CAR_MODELS.find((m) => m.id === modelId) || CAR_MODELS[1];
+let carSeq = 1;
+export function makeCar(model, x, y, angle, opts = {}) {
+  const def = CAR_MODELS[model];
   return {
-    id: nextId++, model, color, x, y, angle, vx: 0, vy: 0, speed: 0,
-    hp: model.hp, kind, driver: null, steerVis: 0, dead: false, honkT: 0,
+    id: carSeq++, model, def, x, y, angle,
+    vx: 0, vy: 0, steerVis: 0,
+    color: opts.color || def.colors[0],
+    hp: def.hp, maxHp: def.hp,
+    police: !!opts.police, parked: !!opts.parked,
+    driver: opts.driver || null, ai: opts.ai || null,
+    missionCar: false, smokeT: 0, dead: false,
   };
 }
 
-export function modelById(id) { return CAR_MODELS.find((m) => m.id === id) || CAR_MODELS[1]; }
+export function carSpeed(car) { return Math.hypot(car.vx, car.vy); }
+export function forwardSpeed(car) { return car.vx * Math.cos(car.angle) + car.vy * Math.sin(car.angle); }
 
-/**
- * Advance one car. input: {throttle -1..1, steer -1..1, handbrake}. Returns the
- * impact speed if it hit something hard this step, else 0.
- */
-export function updateCar(car, input, dt) {
-  const m = car.model;
+// One physics step. ctl: { throttle -1..1, steer -1..1, handbrake bool }.
+// Returns impact speed if the car slammed something this step, else 0.
+export function stepCar(car, dt, ctl, handling = 1, durability = 1) {
+  const def = car.def;
   const fx = Math.cos(car.angle), fy = Math.sin(car.angle);
-  const rx = -fy, ry = fx;
-  let vf = car.vx * fx + car.vy * fy;
-  let vl = car.vx * rx + car.vy * ry;
-  const wrecked = car.hp <= 0;
-  const top = wrecked ? m.speed * 0.25 : m.speed;
-  if (input.throttle > 0) vf += m.accel * input.throttle * dt * (vf < 0 ? 2.2 : 1);
-  else if (input.throttle < 0) vf += (vf > 12 ? -m.accel * 1.6 : m.accel * input.throttle * 0.55) * dt;
-  vf -= vf * 0.55 * dt;
-  vf = Math.max(-top * 0.38, Math.min(top, vf));
-  vl *= Math.exp(-(input.handbrake ? 1.4 : 8.5) * dt);
-  const turn = 2.7 * Math.max(-1, Math.min(1, vf / 130));
-  car.angle += input.steer * turn * dt * (input.handbrake ? 1.35 : 1);
-  car.steerVis = input.steer;
+  let fSpd = car.vx * fx + car.vy * fy;
+  const latX = car.vx - fx * fSpd, latY = car.vy - fy * fSpd;
+  if (ctl.throttle > 0) fSpd += def.accel * ctl.throttle * dt;
+  else if (ctl.throttle < 0) fSpd += (fSpd > 8 ? -420 : -def.accel * 0.55) * -ctl.throttle * dt;
+  fSpd -= fSpd * (ctl.handbrake ? 1.4 : 0.55) * dt;                 // drag / brake scrub
+  fSpd = clamp(fSpd, -def.top * 0.38, def.top);
+  const gripKeep = ctl.handbrake ? Math.pow(0.06, dt) : Math.pow(0.0001, dt) * def.grip + Math.pow(0.25, dt) * (1 - def.grip);
+  const turnAuthority = clamp(Math.abs(fSpd) / 60, 0, 1) * (fSpd < 0 ? -1 : 1);
+  car.angle += ctl.steer * 2.05 * handling * turnAuthority * dt * clamp(Math.abs(fSpd) / def.top + 0.35, 0.35, 1);
+  car.steerVis = ctl.steer;
   const nfx = Math.cos(car.angle), nfy = Math.sin(car.angle);
-  car.vx = nfx * vf + -nfy * vl;
-  car.vy = nfy * vf + nfx * vl;
-  car.speed = vf;
+  car.vx = nfx * fSpd + latX * gripKeep;
+  car.vy = nfy * fSpd + latY * gripKeep;
   const px = car.x, py = car.y;
   car.x += car.vx * dt; car.y += car.vy * dt;
-  const fixed = collideCircle(G.world, car.x, car.y, m.l * 0.34);
+  const res = collideCircle(car.x, car.y, def.w * 0.40);
+  car.x = res.x; car.y = res.y;
   let impact = 0;
-  if (fixed.x !== car.x || fixed.y !== car.y) {
-    impact = Math.hypot(car.vx, car.vy);
-    car.x = fixed.x; car.y = fixed.y;
-    car.vx *= 0.3; car.vy *= 0.3;
-    if (impact > 130) { damageCar(car, (impact - 120) * 0.09); if (car.driver === 'player') sfx.crash(); }
+  if (res.hit) {
+    const before = Math.hypot(car.vx, car.vy);
+    // Kill the velocity component that pushed into the solid.
+    const pushX = car.x - px - car.vx * dt, pushY = car.y - py - car.vy * dt;
+    if (Math.abs(pushX) > 0.01) car.vx *= -0.25;
+    if (Math.abs(pushY) > 0.01) car.vy *= -0.25;
+    const after = Math.hypot(car.vx, car.vy);
+    impact = Math.max(0, before - after);
+    if (impact > 55) damageCar(car, impact * 0.22 * durability);
   }
-  // Car-to-car: a soft circle push, damage only on a real hit.
-  for (const other of G.cars) {
-    if (other === car || other.dead) continue;
-    const dx = car.x - other.x, dy = car.y - other.y, rr = (m.l + other.model.l) * 0.30;
+  // Car-to-car: soft push apart, damage on hard contact.
+  for (const o of G.cars) {
+    if (o === car || o.dead) continue;
+    const dx = car.x - o.x, dy = car.y - o.y, rr = (def.w + o.def.w) * 0.36;
     const d2 = dx * dx + dy * dy;
-    if (d2 < rr * rr && d2 > 0.01) {
-      const d = Math.sqrt(d2), push = (rr - d) / 2;
-      car.x += (dx / d) * push; car.y += (dy / d) * push;
-      other.x -= (dx / d) * push; other.y -= (dy / d) * push;
-      const rel = Math.abs(car.speed - other.speed);
-      if (rel > 120) { damageCar(car, rel * 0.03); damageCar(other, rel * 0.03); if (car.driver === 'player' || other.driver === 'player') sfx.crash(); }
-    }
+    if (d2 > rr * rr || d2 < 0.01) continue;
+    const d = Math.sqrt(d2), push = (rr - d) / 2, ux = dx / d, uy = dy / d;
+    car.x += ux * push; car.y += uy * push; o.x -= ux * push; o.y -= uy * push;
+    const rel = Math.abs(car.vx - o.vx) + Math.abs(car.vy - o.vy);
+    if (rel > 130) { damageCar(car, rel * 0.10 * durability); damageCar(o, rel * 0.10); impact = Math.max(impact, rel * 0.6); }
+    car.vx += ux * 14; car.vy += uy * 14; o.vx -= ux * 14; o.vy -= uy * 14;
   }
-  if (car.hp < 45 && Math.random() < dt * 6) {
-    G.particles.push({ kind: 'smoke', x: car.x + fx * m.l * 0.3, y: car.y + fy * m.l * 0.3, vx: 0, vy: -22, life: 0.9, t: 0, size: 7 + Math.random() * 6 });
-  }
+  if (impact > 90) { sfx.crash(Math.min(1, impact / 220)); G.shake = Math.min(9, impact / 26); }
+  else if (impact > 45) sfx.crash(0.4);
   return impact;
 }
 
 export function damageCar(car, amount) {
-  car.hp = Math.max(0, car.hp - amount);
-  if (car.hp <= 0 && !car.dead) { car.dead = true; }
+  if (car.dead) return;
+  car.hp -= amount;
+  if (car.hp <= 0) {
+    car.hp = 0; car.dead = true;
+    for (let i = 0; i < 14; i++) G.particles.push({ kind: 'spark', x: car.x, y: car.y, vx: (Math.random() - 0.5) * 260, vy: (Math.random() - 0.5) * 260, t: 0, life: 0.7 });
+    sfx.crash(1);
+  }
 }
 
-export function drawCar(c, car) {
-  const m = car.model, L = m.l, W = m.w;
-  c.save();
-  c.translate(car.x, car.y);
-  c.fillStyle = 'rgba(40,16,40,0.30)';
-  c.beginPath(); c.ellipse(3, 6, L * 0.52, W * 0.55, car.angle, 0, Math.PI * 2); c.fill();
-  c.rotate(car.angle);
-  // Wheels, the front pair turned by the steering.
-  c.fillStyle = '#14161c';
-  for (const [wx, wy, front] of [[-L * 0.32, -W / 2, 1], [-L * 0.32, W / 2, 1], [L * 0.32, -W / 2, 0], [L * 0.32, W / 2, 0]]) {
-    c.save(); c.translate(wx, wy); if (front) c.rotate(car.steerVis * 0.4);
-    c.fillRect(-6, -3, 12, 6); c.restore();
+// Smoke and fire for wrecked rides; called once per frame for all cars.
+export function updateCarFx(dt) {
+  for (const car of G.cars) {
+    if (car.hp > car.maxHp * 0.45 && !car.dead) continue;
+    car.smokeT -= dt;
+    if (car.smokeT <= 0) {
+      car.smokeT = car.dead ? 0.1 : 0.22;
+      G.particles.push({ kind: car.dead ? 'fire' : 'smoke', x: car.x + (Math.random() - 0.5) * 16, y: car.y - 4, vx: (Math.random() - 0.5) * 12, vy: -34 - Math.random() * 22, t: 0, life: rand1(0.8, 1.5) });
+    }
   }
-  const grad = c.createLinearGradient(0, -W / 2, 0, W / 2);
-  grad.addColorStop(0, car.color); grad.addColorStop(0.5, car.color); grad.addColorStop(1, 'rgba(0,0,0,0.28)');
-  c.fillStyle = grad;
-  c.beginPath(); c.roundRect(-L / 2, -W / 2, L, W, 9); c.fill();
-  c.fillStyle = 'rgba(255,255,255,0.20)';
-  c.beginPath(); c.roundRect(-L / 2 + 3, -W / 2 + 2, L - 6, 5, 3); c.fill();
-  // Cabin and glass.
-  c.fillStyle = '#1d2733';
-  c.beginPath(); c.roundRect(-L * 0.16, -W * 0.38, L * 0.34, W * 0.76, 6); c.fill();
-  c.fillStyle = '#7fd4e8';
-  c.beginPath(); c.roundRect(L * 0.10, -W * 0.34, L * 0.09, W * 0.68, 3); c.fill();
-  c.beginPath(); c.roundRect(-L * 0.24, -W * 0.34, L * 0.07, W * 0.68, 3); c.fill();
-  if (car.kind === 'police') {
-    c.fillStyle = '#14161c';
-    c.fillRect(-L * 0.05, -W / 2, L * 0.16, W);
-    const flash = Math.floor(G.time * 6) % 2 === 0;
-    c.fillStyle = flash ? '#ff3b30' : '#5e2b28'; c.fillRect(-4, -W * 0.30, 8, W * 0.28);
-    c.fillStyle = flash ? '#2b4a6b' : '#2f7bff'; c.fillRect(-4, W * 0.03, 8, W * 0.28);
-    c.fillStyle = '#14161c'; c.font = 'bold 8px system-ui'; c.textAlign = 'center';
-    c.fillText('POLICÍA', 0, W * 0.72);
+}
+function rand1(a, b) { return a + Math.random() * (b - a); }
+
+export function drawCar(ctx, car) {
+  const { w, h } = car.def;
+  ctx.save();
+  ctx.translate(car.x, car.y);
+  // Long golden-hour shadow, cast to the south-east.
+  ctx.fillStyle = 'rgba(46,16,44,0.30)';
+  ctx.beginPath(); ctx.ellipse(13, 10, w * 0.56, h * 0.62, car.angle, 0, Math.PI * 2); ctx.fill();
+  ctx.rotate(car.angle);
+  const dmg = 1 - car.hp / car.maxHp;
+  // Headlight glow pools ahead (dusk).
+  const grad = ctx.createRadialGradient(w * 0.7, 0, 4, w * 0.95, 0, 62);
+  grad.addColorStop(0, 'rgba(255,214,140,0.20)'); grad.addColorStop(1, 'rgba(255,214,140,0)');
+  ctx.fillStyle = grad; ctx.fillRect(w * 0.4, -30, 90, 60);
+  // Body.
+  ctx.fillStyle = car.police ? '#eef1f4' : shade(car.color, 0.92);
+  roundRect(ctx, -w / 2, -h / 2, w, h, 7); ctx.fill();
+  ctx.fillStyle = car.police ? '#23272e' : shade(car.color, 1.14);
+  roundRect(ctx, -w * 0.16, -h / 2 + 2.5, w * 0.52, h - 5, 5); ctx.fill();   // cabin/roof band
+  ctx.fillStyle = 'rgba(16,24,38,0.88)';                                       // glass
+  roundRect(ctx, -w * 0.10, -h / 2 + 4.5, w * 0.15, h - 9, 3); ctx.fill();
+  roundRect(ctx, w * 0.16, -h / 2 + 4.5, w * 0.11, h - 9, 3); ctx.fill();
+  if (car.police) {
+    ctx.fillStyle = '#23272e'; ctx.fillRect(-w / 2, -3, w, 6);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 7px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('POLICÍA', 0, 2.5);
+    const flash = Math.sin(G.time * 11 + car.id) > 0;
+    ctx.fillStyle = flash ? '#ff2e4d' : '#5a0f1c'; ctx.fillRect(-7, -h / 2 - 2.5, 6, 3.4);
+    ctx.fillStyle = flash ? '#3d6bff' : '#12224d'; ctx.fillRect(1, -h / 2 - 2.5, 6, 3.4);
   }
-  if (car.model.id === 'taxi') {
-    c.fillStyle = '#14161c'; c.fillRect(-6, -7, 12, 14);
-    c.fillStyle = '#ffd75e'; c.font = 'bold 7px system-ui'; c.textAlign = 'center'; c.fillText('TAXI', 0, 2.5);
-  }
-  if (car.hp < 55) { // dents
-    c.fillStyle = 'rgba(20,20,20,0.35)';
-    c.beginPath(); c.arc(L * 0.3, -W * 0.2, 5, 0, Math.PI * 2); c.arc(-L * 0.35, W * 0.25, 4, 0, Math.PI * 2); c.fill();
-  }
-  c.restore();
+  // Wheels.
+  ctx.fillStyle = '#14161a';
+  for (const [wx, wy] of [[-w * 0.32, -h / 2 - 1.5], [w * 0.30, -h / 2 - 1.5], [-w * 0.32, h / 2 - 1.5], [w * 0.30, h / 2 - 1.5]])
+    ctx.fillRect(wx - 5, wy - 0.5, 10, 3.4);
+  // Lights.
+  ctx.fillStyle = '#ffe9a8'; ctx.fillRect(w / 2 - 2.5, -h / 2 + 3, 2.6, 4.4); ctx.fillRect(w / 2 - 2.5, h / 2 - 7.4, 2.6, 4.4);
+  ctx.fillStyle = '#ff3049'; ctx.fillRect(-w / 2 - 0.2, -h / 2 + 3, 2.4, 4.4); ctx.fillRect(-w / 2 - 0.2, h / 2 - 7.4, 2.4, 4.4);
+  if (dmg > 0.25) { ctx.fillStyle = `rgba(20,16,14,${0.25 + dmg * 0.4})`; roundRect(ctx, -w * 0.3, -h * 0.3, w * 0.34, h * 0.5, 6); ctx.fill(); }
+  ctx.restore();
+}
+
+export function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
