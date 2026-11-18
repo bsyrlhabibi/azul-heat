@@ -55,7 +55,8 @@ AH.Shots = (function () {
       // the sand together, the timed pier run live on the HUD with its
       // beacon on the pier — and a live firefight, not a pose: Lucía's
       // trigger is held down through the game's own input, two foot
-      // cops close in under the real pursuit AI, and every bullet,
+      // cops close in under the real pursuit AI, the helicopter holds
+      // its searchlight over the beach at four stars, and every bullet,
       // flash and hit is the combat system itself.
       const pier = AH.PLACES.pier;
       P.x = pier.x - 172; P.y = pier.y; P.ang = 0;
@@ -64,7 +65,8 @@ AH.Shots = (function () {
       G.peds.push(AH.Peds.makePed(pier.x + 132, pier.y + 46, 'cop'));
       G.mission = { def: AH.MISSIONS[2], stage: 1, t: 148, switched: false, failOnBust: false };
       AH.Input.mouse.x = 976; AH.Input.mouse.y = 370; AH.Input.mouse.down = true;
-      G.wanted = 2; G.wantedFloor = 2; G.seenTimer = 0;
+      G.wanted = 4; G.wantedFloor = 4; G.seenTimer = 0;
+      G.heli = { x: P.x + 330, y: P.y - 290 };
       AH.Phone.addMessage('DJ Prisma', 'The pier crowd is waiting, estrella. Do not be late.');
       G.cash = 640;
     } else if (shot === 'map') {
