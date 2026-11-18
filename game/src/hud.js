@@ -81,7 +81,7 @@ AH.Hud = (function () {
     if (G.bustTimer > 0) {
       ctx.fillStyle = 'rgba(10,8,20,0.6)'; AH.Phone.roundRect(ctx, W / 2 - 110, H - 150, 220, 16, 8); ctx.fill();
       ctx.fillStyle = '#ff4040'; AH.Phone.roundRect(ctx, W / 2 - 110, H - 150, 220 * (G.bustTimer / 1.6), 16, 8); ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('BUSTED… RUN!', W / 2, H - 138); ctx.textAlign = 'left';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('THEY\'VE GOT YOU — RUN!', W / 2, H - 138); ctx.textAlign = 'left';
     }
     // context prompt
     const pr = prompt();

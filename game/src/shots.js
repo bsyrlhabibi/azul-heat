@@ -51,16 +51,22 @@ AH.Shots = (function () {
       G.districtName = 'Marina'; G.districtTimer = 2.6;
       G.cash = 410;
     } else if (shot === 'mission') {
-      // the First Run conversation, both runners at Carmen's door.
-      P.x = door.x - 26; P.y = door.y + 8; P.ang = -Math.PI / 2;
-      G.partner.x = door.x + 34; G.partner.y = door.y + 14;
-      const carmen = AH.Peds.makePed(door.x, door.y - 16, 'civil');
-      carmen.shirt = '#ff9f1c'; carmen.speed = 0;
-      G.peds.push(carmen);
-      G.mission = { def: AH.MISSIONS[0], stage: 0, t: 0, switched: false, failOnBust: false };
-      G.dialogue = { lines: AH.MISSIONS[0].stages[0].lines, i: 1, t: 0 };
-      AH.Phone.addMessage('Tía Carmen', 'Lucía, mi cielo — the bakery van died again.');
-      G.cash = 250;
+      // the Prisma's Night finale at Muelle Azul Pier: both runners on
+      // the sand together, the timed pier run live on the HUD with its
+      // beacon on the pier — and a live firefight, not a pose: Lucía's
+      // trigger is held down through the game's own input, two foot
+      // cops close in under the real pursuit AI, and every bullet,
+      // flash and hit is the combat system itself.
+      const pier = AH.PLACES.pier;
+      P.x = pier.x - 172; P.y = pier.y; P.ang = 0;
+      G.partner.x = pier.x - 128; G.partner.y = pier.y + 40; G.partner.ang = 0.4;
+      G.peds.push(AH.Peds.makePed(pier.x + 96, pier.y - 30, 'cop'));
+      G.peds.push(AH.Peds.makePed(pier.x + 132, pier.y + 46, 'cop'));
+      G.mission = { def: AH.MISSIONS[2], stage: 1, t: 148, switched: false, failOnBust: false };
+      AH.Input.mouse.x = 976; AH.Input.mouse.y = 370; AH.Input.mouse.down = true;
+      G.wanted = 2; G.wantedFloor = 2; G.seenTimer = 0;
+      AH.Phone.addMessage('DJ Prisma', 'The pier crowd is waiting, estrella. Do not be late.');
+      G.cash = 640;
     } else if (shot === 'map') {
       // the planning screen, with a run worth showing off.
       G.storyDone = 3;

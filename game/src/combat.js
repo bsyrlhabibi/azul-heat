@@ -1,7 +1,7 @@
 'use strict';
 /* Azul Heat — combat: mouse-aimed shooting on foot, bullets, damage to
-   people and cars, and the two ways a run ends: WASTED (hospital) and
-   BUSTED (fine). Keep it arcade: fast, readable, forgiving. */
+   people and cars, and the two ways a run ends: LIGHTS OUT (hospital)
+   and COLLARED (fine). Keep it arcade: fast, readable, forgiving. */
 AH.Combat = (function () {
   const R = AH.Rng, U = AH.U;
 
@@ -22,7 +22,7 @@ AH.Combat = (function () {
     const G = AH.G, P = G.player;
     P.dead = true; G.stats.wasted++;
     const fee = Math.max(50, Math.floor(G.cash * 0.1));
-    AH.banner('WASTED', 'Hospital del Sol patched you up — fee $' + fee, '#ff5964', 3.6);
+    AH.banner('LIGHTS OUT', 'Hospital del Sol patched you up — fee $' + fee, '#ff5964', 3.6);
     setTimeout(() => {
       G.cash = Math.max(0, G.cash - fee);
       P.hp = 100; P.armor = 0; P.dead = false;
@@ -38,9 +38,9 @@ AH.Combat = (function () {
     G.stats.busted++;
     const fine = Math.min(G.cash, 120 + G.wanted * 90);
     G.cash -= fine;
-    AH.banner('BUSTED', 'The police fine you $' + fine + ' and take the heat off.', '#37e0ff', 3.4);
+    AH.banner('COLLARED', 'The police fine you $' + fine + ' and take the heat off.', '#37e0ff', 3.4);
     AH.Police.setWanted(0); G.wantedFloor = 0; G.bustTimer = 0;
-    if (G.mission && G.mission.failOnBust) AH.Story.failMission('Busted during the job.');
+    if (G.mission && G.mission.failOnBust) AH.Story.failMission('Caught during the job.');
     AH.Save.write();
   }
 

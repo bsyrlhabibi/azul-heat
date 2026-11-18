@@ -69,16 +69,23 @@ AH.Minimap = (function () {
     ctx.fillText('BAHÍA AZUL', mx, 44);
     ctx.font = '13px system-ui, sans-serif'; ctx.fillStyle = '#9d94b8';
     ctx.fillText('Six districts, one sunset. M / Esc — back to the streets', mx + 190, 44);
-    // districts
+    // districts (their name + rep rects are recorded so the place
+    // labels below can steer clear of them)
+    const taken = [];
     for (let i = 0; i < AH.DISTRICTS.length; i++) {
       const d = AH.DISTRICTS[i];
       ctx.fillStyle = d.wall[0] + '55'; ctx.fillStyle = shade(d.ground, 0.9);
       ctx.fillRect(mx + d.x * k, my + d.y * k, d.w * k, d.h * k);
+      const dcx = mx + (d.x + d.w / 2) * k, dcy = my + (d.y + d.h / 2) * k;
       ctx.fillStyle = 'rgba(245,240,230,0.92)';
       ctx.font = 'bold 15px system-ui, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(d.name.toUpperCase(), mx + (d.x + d.w / 2) * k, my + (d.y + d.h / 2) * k);
+      const nameUp = d.name.toUpperCase();
+      taken.push({ x: dcx - ctx.measureText(nameUp).width / 2 - 3, y: dcy - 13, w: ctx.measureText(nameUp).width + 6, h: 15 });
+      ctx.fillText(nameUp, dcx, dcy);
       ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = 'rgba(245,240,230,0.75)';
-      ctx.fillText('rep ' + Math.round(G.rep[i]) + '%', mx + (d.x + d.w / 2) * k, my + (d.y + d.h / 2) * k + 16);
+      const repTxt = 'rep ' + Math.round(G.rep[i]) + '%';
+      taken.push({ x: dcx - ctx.measureText(repTxt).width / 2 - 3, y: dcy + 6, w: ctx.measureText(repTxt).width + 6, h: 13 });
+      ctx.fillText(repTxt, dcx, dcy + 16);
     }
     ctx.textAlign = 'left';
     // sea
@@ -88,13 +95,38 @@ AH.Minimap = (function () {
     ctx.strokeStyle = 'rgba(30,28,40,0.65)'; ctx.lineWidth = Math.max(2, C.roadW * k);
     for (const rx of C.vRoads) { ctx.beginPath(); ctx.moveTo(mx + rx * k, my); ctx.lineTo(mx + rx * k, my + C.worldH * k); ctx.stroke(); }
     for (const ry of C.hRoads) { ctx.beginPath(); ctx.moveTo(mx, my + ry * k); ctx.lineTo(mx + C.seaX * k, my + ry * k); ctx.stroke(); }
-    // named places + safehouses
+    // named places + safehouses — each label takes the first anchor
+    // (right, left, below, above) that clears every district name,
+    // rep line and label already placed, on a soft dark backing
     ctx.font = '10.5px system-ui, sans-serif';
     for (const key of Object.keys(AH.PLACES)) {
       const p = AH.PLACES[key];
-      blip(ctx, mx + p.x * k, my + p.y * k, '#ffd23f', 3.4, false);
-      ctx.fillStyle = 'rgba(245,240,230,0.85)';
-      ctx.fillText(p.label, mx + p.x * k + 7, my + p.y * k + 3);
+      const bx = mx + p.x * k, by = my + p.y * k;
+      blip(ctx, bx, by, '#ffd23f', 3.4, false);
+      const lw = ctx.measureText(p.label).width;
+      const anchors = [
+        { x: bx + 7, y: by + 3, align: 'left' },
+        { x: bx - 7, y: by + 3, align: 'right' },
+        { x: bx + 7, y: by + 15, align: 'left' },
+        { x: bx + 7, y: by - 9, align: 'left' },
+        { x: bx - 7, y: by + 15, align: 'right' },
+        { x: bx - 7, y: by - 9, align: 'right' },
+      ];
+      let spot = null;
+      for (const a of anchors) {
+        const rect = { x: (a.align === 'left' ? a.x : a.x - lw) - 2, y: a.y - 9, w: lw + 4, h: 12 };
+        if (rect.x < mx || rect.x + rect.w > mx + mw) continue;
+        if (taken.some(t => rect.x < t.x + t.w && rect.x + rect.w > t.x && rect.y < t.y + t.h && rect.y + rect.h > t.y)) continue;
+        spot = { a, rect }; break;
+      }
+      if (!spot) spot = { a: anchors[0], rect: { x: bx + 5, y: by - 6, w: lw + 4, h: 12 } };
+      taken.push(spot.rect);
+      ctx.fillStyle = 'rgba(13,10,24,0.55)';
+      ctx.fillRect(spot.rect.x, spot.rect.y, spot.rect.w, spot.rect.h);
+      ctx.fillStyle = 'rgba(245,240,230,0.92)';
+      ctx.textAlign = spot.a.align;
+      ctx.fillText(p.label, spot.a.x, spot.a.y);
+      ctx.textAlign = 'left';
     }
     for (const key of Object.keys(AH.SAFEHOUSE_SPOTS)) {
       const s = AH.SAFEHOUSE_SPOTS[key];
