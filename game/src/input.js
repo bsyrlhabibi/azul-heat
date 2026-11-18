@@ -1,32 +1,41 @@
-// input.js — keyboard and mouse capture. Modules poll `keys` for held
-// controls and consume one-shot presses through `pressed`.
+'use strict';
+/* Azul Heat — keyboard and mouse. `key` is level-triggered (held),
+   `pressed` is edge-triggered and consumed once per frame by whoever
+   asks first — menus and the game never fight over the same press. */
+AH.Input = (function () {
+  const held = new Set(), edge = new Set();
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
+  let canvas = null;
 
-export const keys = {};
-const pressQueue = new Set();
-export const mouse = { x: 0, y: 0, down: false, clicked: false };
+  function init(cv) {
+    canvas = cv;
+    window.addEventListener('keydown', e => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].includes(e.code)) e.preventDefault();
+      if (!e.repeat) edge.add(e.code);
+      held.add(e.code);
+      AH.Audio.ensure();
+    });
+    window.addEventListener('keyup', e => held.delete(e.code));
+    window.addEventListener('blur', () => { held.clear(); mouse.down = false; });
+    cv.addEventListener('mousemove', e => {
+      const r = cv.getBoundingClientRect();
+      mouse.x = (e.clientX - r.left) * (AH.CFG.viewW / r.width);
+      mouse.y = (e.clientY - r.top) * (AH.CFG.viewH / r.height);
+    });
+    cv.addEventListener('mousedown', e => { mouse.down = true; mouse.clicked = true; AH.Audio.ensure(); });
+    window.addEventListener('mouseup', () => { mouse.down = false; });
+  }
 
-export function pressed(code) {
-  if (pressQueue.has(code)) { pressQueue.delete(code); return true; }
-  return false;
-}
-export function held(...codes) { return codes.some((c) => keys[c]); }
+  function key(code) { return held.has(code); }
+  function pressed(code) {
+    if (edge.has(code)) { edge.delete(code); return true; }
+    return false;
+  }
+  function endFrame() { edge.clear(); mouse.clicked = false; }
+  function mouseWorld() {
+    const G = AH.G;
+    return { x: G.cam.x + (mouse.x - AH.CFG.viewW / 2), y: G.cam.y + (mouse.y - AH.CFG.viewH / 2) };
+  }
 
-export function initInput(canvas) {
-  window.addEventListener('keydown', (e) => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].includes(e.code)) e.preventDefault();
-    if (!e.repeat) pressQueue.add(e.code);
-    keys[e.code] = true;
-  });
-  window.addEventListener('keyup', (e) => { keys[e.code] = false; });
-  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouse.down = false; });
-  canvas.addEventListener('mousemove', (e) => {
-    const r = canvas.getBoundingClientRect();
-    mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-    mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-  });
-  canvas.addEventListener('mousedown', (e) => { if (e.button === 0) { mouse.down = true; mouse.clicked = true; } });
-  window.addEventListener('mouseup', (e) => { if (e.button === 0) mouse.down = false; });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-}
-
-export function endFrameInput() { mouse.clicked = false; pressQueue.clear(); }
+  return { init, key, pressed, endFrame, mouse, mouseWorld };
+})();

@@ -1,125 +1,123 @@
-// characters.js — the two runners: on-foot movement with mouse aim, driving
-// the car they are in, entering and stealing cars, and Tab-switching
-// between Lucía and Marco (each keeps their own health, ammo and spot).
+'use strict';
+/* Azul Heat — the two runners. Lucía Ferro, a courier who knows every
+   alley in Bahía Azul (cars answer quicker in her hands), and Marco
+   Reyes, an ex-mechanic (any car he drives takes more punishment).
+   Tab swaps control; the other runner stays where you left them. */
+AH.Chars = (function () {
+  const U = AH.U;
 
-import { PLACES, CONTACTS } from './config.js';
-import { G, activeRunner, activeDef, otherRunnerId, addFloater } from './state.js';
-import { keys, pressed, mouse } from './input.js';
-import { collideCircle } from './world.js';
-import { stepCar, carSpeed } from './vehicles.js';
-import { clamp, dist, angleTo } from './random.js';
-import { reportCrime } from './police.js';
-import { sfx } from './audio.js';
+  const list = [
+    { id: 'lucia', name: 'Lucía Ferro', role: 'Courier — better handling',
+      shirt: '#ff5964', pants: '#2b2d42', hair: '#201510', skin: '#c68642',
+      handling: 1.18, toughness: 1.0 },
+    { id: 'marco', name: 'Marco Reyes', role: 'Ex-mechanic — tougher cars',
+      shirt: '#37e0ff', pants: '#3d405b', hair: '#111111', skin: '#8d5524',
+      handling: 1.0, toughness: 1.45 },
+  ];
 
-export function switchRunner() {
-  const cur = activeRunner();
-  if (cur.car) exitCar();
-  G.active = otherRunnerId();
-  const next = activeRunner();
-  G.cam.x = next.x; G.cam.y = next.y;
-  addFloater(next.x, next.y - 26, activeDef().name, '#ffd23f');
-  sfx.click();
-}
-
-export function exitCar() {
-  const r = activeRunner();
-  const car = r.car;
-  if (!car) return;
-  car.driver = null; car.parked = true;
-  r.car = null;
-  const side = car.angle + Math.PI / 2;
-  const res = collideCircle(car.x + Math.cos(side) * 30, car.y + Math.sin(side) * 30, 9);
-  r.x = res.x; r.y = res.y; r.angle = car.angle;
-}
-
-export function enterCar(car) {
-  const r = activeRunner();
-  if (car.driver === 'traffic') {
-    // Carjacking: the driver bails and runs.
-    car.driver = null;
-    G.peds.push({ x: car.x + 24, y: car.y + 10, angle: car.angle, walk: 0, flee: 4, fleeFrom: { x: r.x, y: r.y }, speed: 125, skin: '#9a6a42', top: '#7d8597', bottom: '#33383f', hair: '#201812', hp: 100 });
-    reportCrime('carjack', car.x, car.y);
-  } else if (car.police) {
-    reportCrime('stealPolice', car.x, car.y);
-  } else if (!car.stolen) {
-    reportCrime('steal', car.x, car.y);
-  }
-  if (!car.stolen) { car.stolen = true; G.stats.carsStolen++; }
-  car.driver = 'player'; car.parked = false;
-  r.car = car;
-  sfx.click();
-}
-
-export function hurtRunner(amount, fromX, fromY) {
-  const r = activeRunner();
-  if (G.screen !== 'play') return;
-  const absorbed = Math.min(r.armor, amount * 0.7);
-  r.armor -= absorbed; r.hp -= (amount - absorbed);
-  G.shake = Math.min(7, G.shake + 2.5);
-  if (fromX !== undefined) addFloater(r.x, r.y - 24, 'OUCH', '#ff5d5d');
-  if (r.hp <= 0) { r.hp = 0; G.screen = 'wasted'; G.deadT = 0; sfx.fail(); }
-}
-
-// What the E key would do right now, for the HUD prompt and main's dispatch.
-export function findInteract() {
-  const r = activeRunner();
-  if (r.car) {
-    if (dist(r.x, r.y, PLACES.garage.x, PLACES.garage.y) < 74) return { kind: 'garageStore', label: 'E — store car in the garage' };
-    if (dist(r.x, r.y, PLACES.raceStart.x, PLACES.raceStart.y) < 84 && !G.gig) return { kind: 'race', label: 'E — start the street race' };
-    return { kind: 'exit', label: 'E — get out' };
-  }
-  for (const c of CONTACTS) {
-    const p = PLACES[c.place];
-    if (dist(r.x, r.y, p.x, p.y) < 58) return { kind: 'contact', contactId: c.id, label: `E — talk to ${c.name}` };
-  }
-  if (dist(r.x, r.y, PLACES.safehouse.x, PLACES.safehouse.y) < 66) return { kind: 'safehouse', label: 'E — safehouse: rest, save, garage' };
-  for (const key of ['gunshopA', 'gunshopB']) {
-    if (dist(r.x, r.y, PLACES[key].x, PLACES[key].y) < 60) return { kind: 'shop', place: key, label: 'E — Ammu-Nación: gear up' };
-  }
-  if (!G.gig && !G.mission && dist(r.x, r.y, PLACES.docksDepot.x, PLACES.docksDepot.y) < 62) return { kind: 'courier', label: 'E — courier board: run a package' };
-  if (!G.gig && !G.mission && dist(r.x, r.y, PLACES.oldtownYard.x, PLACES.oldtownYard.y) < 62) return { kind: 'rampage', label: 'E — start a rampage here' };
-  let best = null, bd = 50;
-  for (const car of G.cars) {
-    if (car.dead || car.driver === 'player') continue;
-    const d = dist(r.x, r.y, car.x, car.y);
-    if (d < bd) { bd = d; best = car; }
-  }
-  if (best) return { kind: 'car', car: best, label: best.driver === 'traffic' ? `E — steal the ${best.def.name}` : `E — drive the ${best.def.name}` };
-  return null;
-}
-
-export function updateRunner(dt) {
-  const r = activeRunner();
-  const def = activeDef();
-  if (pressed('Tab')) { switchRunner(); return; }
-  if (r.car) {
-    const car = r.car;
-    if (car.dead) { exitCar(); addFloater(r.x, r.y - 30, 'WRECKED!', '#ff5d5d'); return; }
-    r.x = car.x; r.y = car.y; r.angle = car.angle;
-    const ctl = {
-      throttle: (keys.KeyW || keys.ArrowUp ? 1 : 0) + (keys.KeyS || keys.ArrowDown ? -1 : 0),
-      steer: (keys.KeyA || keys.ArrowLeft ? -1 : 0) + (keys.KeyD || keys.ArrowRight ? 1 : 0),
-      handbrake: !!keys.Space,
+  function makeRunner(charId, x, y) {
+    const def = list[charId];
+    return {
+      charId, x, y, ang: -Math.PI / 2, speed: 0, hp: 100, armor: 0,
+      inCar: null, walkPhase: 0, fireT: 0, dead: false,
+      def, name: def.name,
     };
-    stepCar(car, dt, ctl, def.handling, def.durability);
-    if (pressed('KeyH')) sfx.horn();
-    for (const [code, st] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 3], ['Digit0', 0]])
-      if (pressed(code)) { G.radio = st; if (st) addFloater(r.x, r.y - 30, '♪ radio on', '#7bf1a8'); }
-    r.walk += carSpeed(car) * dt * 0.05;
-    return;
   }
-  // On foot.
-  let mx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
-  let my = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
-  const moving = mx !== 0 || my !== 0;
-  if (moving) {
-    const len = Math.hypot(mx, my); mx /= len; my /= len;
-    const spd = 148 * def.footSpeed * ((keys.ShiftLeft || keys.ShiftRight) ? 1.45 : 1);
-    const res = collideCircle(r.x + mx * spd * dt, r.y + my * spd * dt, 9);
-    r.x = res.x; r.y = res.y;
-    r.walk += dt * spd * 0.075;
-    if (!mouse.down) r.angle = Math.atan2(my, mx);
+
+  function spawnPair() {
+    const G = AH.G;
+    const door = AH.PLACES.carmenBakery;
+    G.player = makeRunner(0, door.x - 60, door.y + 30);
+    G.partner = makeRunner(1, door.x + 40, door.y + 46);
   }
-  if (mouse.down || keys.KeyF) r.angle = angleTo(r.x, r.y, G.mouse.wx, G.mouse.wy);
-  r.angle = clamp(r.angle, -Math.PI * 2, Math.PI * 2);
-}
+
+  function switchRunner() {
+    const G = AH.G, P = G.player;
+    if (P.inCar) return;                       // swap on foot only
+    if (G.dialogue) return;
+    const old = P, partner = G.partner;
+    const nx = partner.x, ny = partner.y;
+    partner.x = old.x; partner.y = old.y; partner.ang = old.ang;
+    old.x = nx; old.y = ny;
+    partner.hp = old.hp; partner.armor = old.armor; // shared condition, simple & fair
+    G.player = partner; G.partner = old;
+    AH.toast('Now playing: ' + partner.name);
+    AH.Audio.blip(660);
+    if (G.mission && G.mission.needSwitch) G.mission.switched = true;
+  }
+
+  function enterExit() {
+    const G = AH.G, P = G.player;
+    if (P.inCar) {
+      const car = P.inCar;
+      P.x = car.x + Math.cos(car.ang + Math.PI / 2) * 30;
+      P.y = car.y + Math.sin(car.ang + Math.PI / 2) * 30;
+      car.mode = 'parked'; car.driver = null;
+      P.inCar = null;
+      AH.Audio.door();
+      return;
+    }
+    const car = AH.Vehicles.nearestEnterable(P.x, P.y, 52);
+    if (!car) {
+      if (!AH.Economy.tryInteract(P.x, P.y) && !AH.Story.tryInteract(P.x, P.y)) AH.Gigs.tryStart(P.x, P.y);
+      return;
+    }
+    if (car.mode === 'traffic') {              // carjacking a moving car
+      car.mode = 'parked';
+      const d = AH.Peds.makePed(car.x + 24, car.y + 10, 'civil');
+      d.state = 'flee'; d.fleeT = 2.4; d.fx = car.x; d.fy = car.y;
+      G.peds.push(d);
+      AH.Peds.scare(car.x, car.y, 130);
+      AH.Police.addCrime(1, car.x, car.y);
+      G.stats.stolen++;
+    } else if (car.mode === 'parked') {
+      if (!car.everStolen) { car.everStolen = true; G.stats.stolen++; }
+    } else if (car.mode === 'police') {
+      AH.Police.addCrime(2, car.x, car.y);
+    }
+    if (AH.Chars.list[P.charId].toughness > 1) car.hp = Math.min(100, car.hp * AH.Chars.list[P.charId].toughness);
+    car.mode = 'player'; car.driver = P;
+    P.inCar = car; P.x = car.x; P.y = car.y;
+    AH.Audio.door(); AH.Audio.engineStart();
+  }
+
+  function update(dt) {
+    const G = AH.G, P = G.player, In = AH.Input;
+    if (!P || P.dead) return;
+    if (P.inCar) {
+      const car = P.inCar;
+      let th = 0, st = 0;
+      if (In.key('KeyW') || In.key('ArrowUp')) th = 1;
+      if (In.key('KeyS') || In.key('ArrowDown')) th = -1;
+      if (In.key('KeyA') || In.key('ArrowLeft')) st = -1;
+      if (In.key('KeyD') || In.key('ArrowRight')) st = 1;
+      AH.Vehicles.drive(car, dt, th, st, In.key('Space'));
+      P.x = car.x; P.y = car.y; P.ang = car.ang;
+      if (In.pressed('KeyH')) AH.Audio.honk();
+      return;
+    }
+    // on foot
+    let mx = 0, my = 0;
+    if (In.key('KeyW') || In.key('ArrowUp')) my -= 1;
+    if (In.key('KeyS') || In.key('ArrowDown')) my += 1;
+    if (In.key('KeyA') || In.key('ArrowLeft')) mx -= 1;
+    if (In.key('KeyD') || In.key('ArrowRight')) mx += 1;
+    const run = In.key('ShiftLeft') || In.key('ShiftRight');
+    const mag = Math.hypot(mx, my) || 1;
+    const spd = (run ? 218 : 128);
+    P.speed = (mx || my) ? spd : 0;
+    if (mx || my) {
+      P.ang = Math.atan2(my / mag, mx / mag);
+      const nx = P.x + (mx / mag) * spd * dt, ny = P.y + (my / mag) * spd * dt;
+      const res = AH.World.collide(nx, ny, 11);
+      P.x = res.x; P.y = res.y;
+      if (P.x > AH.CFG.waterX - 14) P.x = AH.CFG.waterX - 14;
+      P.walkPhase += dt * (run ? 11 : 8);
+    }
+    // face the mouse for aiming
+    const m = In.mouseWorld();
+    if (In.mouse.down) P.ang = U.angTo(P.x, P.y, m.x, m.y);
+  }
+
+  return { list, makeRunner, spawnPair, switchRunner, enterExit, update };
+})();

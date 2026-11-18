@@ -1,35 +1,49 @@
-// save.js — persists a run to localStorage: cash, reputation, finished
-// missions, the garage car and where each runner is standing.
+'use strict';
+/* Azul Heat — persistence. The whole run (cash, reputation, story
+   progress, safehouses, stats, who's leading) lives in localStorage
+   and is written on every payday, purchase and mission end. */
+AH.Save = (function () {
+  function write() {
+    const G = AH.G;
+    try {
+      localStorage.setItem(AH.CFG.saveKey, JSON.stringify({
+        cash: G.cash, rep: G.rep, storyDone: G.storyDone,
+        safehouses: G.safehouses, stats: G.stats,
+        charId: G.player ? G.player.charId : 0,
+        px: G.player ? Math.round(G.player.x) : null,
+        py: G.player ? Math.round(G.player.y) : null,
+      }));
+    } catch (e) { /* private mode etc. — the run simply won't persist */ }
+  }
 
-import { G } from './state.js';
+  function read() {
+    try {
+      const raw = localStorage.getItem(AH.CFG.saveKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
 
-const KEY = 'azul-heat-save-v1';
-
-export function hasSave() {
-  try { return !!localStorage.getItem(KEY); } catch { return false; }
-}
-
-export function saveGame() {
-  try {
-    localStorage.setItem(KEY, JSON.stringify({
-      cash: G.cash, rep: G.rep, missionsDone: G.missionsDone,
-      garage: G.garage, active: G.active, stats: G.stats,
-      pos: { lucia: { x: G.runners.lucia.x, y: G.runners.lucia.y }, marco: { x: G.runners.marco.x, y: G.runners.marco.y } },
-      hp: { lucia: G.runners.lucia.hp, marco: G.runners.marco.hp },
-    }));
-  } catch { /* storage unavailable: the run simply is not saved */ }
-}
-
-export function loadGame() {
-  try {
-    const d = JSON.parse(localStorage.getItem(KEY));
-    if (!d) return false;
-    G.cash = d.cash ?? G.cash; G.rep = d.rep || {}; G.missionsDone = d.missionsDone || [];
-    G.garage = d.garage || null; G.active = d.active || 'lucia'; G.stats = d.stats || G.stats;
-    for (const id of ['lucia', 'marco']) {
-      if (d.pos && d.pos[id]) { G.runners[id].x = d.pos[id].x; G.runners[id].y = d.pos[id].y; }
-      if (d.hp && d.hp[id]) G.runners[id].hp = d.hp[id];
+  function apply(data) {
+    if (!data) return false;
+    const G = AH.G;
+    G.cash = data.cash | 0;
+    if (Array.isArray(data.rep)) G.rep = data.rep.slice(0, 6);
+    G.storyDone = data.storyDone | 0;
+    Object.assign(G.safehouses, data.safehouses || {});
+    Object.assign(G.stats, data.stats || {});
+    if (G.player && data.px) {
+      const lead = data.charId === 1 ? 1 : 0;
+      if (lead !== G.player.charId) AH.Chars.switchRunner();
+      G.player.x = data.px; G.player.y = data.py;
+      const res = AH.World.collide(G.player.x, G.player.y, 12);
+      G.player.x = res.x; G.player.y = res.y;
     }
     return true;
-  } catch { return false; }
-}
+  }
+
+  function wipe() {
+    try { localStorage.removeItem(AH.CFG.saveKey); } catch (e) {}
+  }
+
+  return { write, read, apply, wipe };
+})();

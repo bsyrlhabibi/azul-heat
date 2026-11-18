@@ -1,52 +1,80 @@
-// phone.js — the in-game phone: a message feed from contacts and the
-// city, opened with T. Messages arrive from story.js, gigs and police.
+'use strict';
+/* Azul Heat — the in-game phone. Contacts send the story to you: every
+   mission opens with their messages, and paydays land here too. T opens
+   it; the toast at the top of the screen is its lock-screen ping. */
+AH.Phone = (function () {
+  const CONTACTS = [
+    { name: 'Tía Carmen', color: '#ff9f1c', blurb: 'Bakery · family · pastelitos' },
+    { name: 'El Contador', color: '#37e0ff', blurb: 'Accounts · ledgers · quiet work' },
+    { name: 'DJ Prisma', color: '#ff4fd8', blurb: 'Club Prisma · the night shift' },
+  ];
 
-import { VIEW_W, VIEW_H } from './config.js';
-import { G } from './state.js';
-import { roundRect } from './vehicles.js';
+  function addMessage(from, text) {
+    const G = AH.G;
+    G.messages.push({ from, text, t: G.time });
+    if (G.messages.length > 40) G.messages.shift();
+    if (G.screen === 'play' && G.overlay !== 'phone') AH.toast('📱 ' + from + ': ' + text.slice(0, 44) + '…');
+    AH.Audio.blip(1180);
+  }
 
-export function drawPhone(ctx) {
-  const w = 400, h = 560, x = (VIEW_W - w) / 2, y = (VIEW_H - h) / 2;
-  ctx.fillStyle = 'rgba(8,8,16,0.45)';
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  ctx.fillStyle = '#12141f';
-  roundRect(ctx, x, y, w, h, 26); ctx.fill();
-  ctx.strokeStyle = '#3d4457'; ctx.lineWidth = 2; roundRect(ctx, x, y, w, h, 26); ctx.stroke();
-  ctx.fillStyle = '#0a0c12'; roundRect(ctx, x + 130, y + 10, 140, 18, 9); ctx.fill();
-  ctx.fillStyle = '#ffd23f';
-  ctx.font = 'bold 21px system-ui'; ctx.textAlign = 'left';
-  ctx.fillText('📱 Bahía Phone', x + 24, y + 62);
-  ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui';
-  ctx.fillText(G.runners[G.active].name + ' · $' + G.cash, x + 24, y + 86);
-  const msgs = G.messages.slice(-9);
-  let cy = y + 116;
-  if (!msgs.length) {
-    ctx.fillStyle = '#c8cede'; ctx.font = '15px system-ui';
-    ctx.fillText('No messages yet. Gold markers on the map mean work.', x + 24, cy);
+  function draw(ctx) {
+    const G = AH.G, W = AH.CFG.viewW, H = AH.CFG.viewH;
+    ctx.fillStyle = 'rgba(10,6,18,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    const pw = 380, ph = 560, px = W - pw - 46, py = (H - ph) / 2;
+    // handset body
+    ctx.fillStyle = '#14101f';
+    roundRect(ctx, px, py, pw, ph, 30); ctx.fill();
+    ctx.strokeStyle = '#3a3350'; ctx.lineWidth = 2; roundRect(ctx, px, py, pw, ph, 30); ctx.stroke();
+    ctx.fillStyle = '#1d1830';
+    roundRect(ctx, px + 12, py + 34, pw - 24, ph - 90, 16); ctx.fill();
+    ctx.fillStyle = '#f5f0e6';
+    ctx.font = 'bold 19px system-ui, sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('📱 AzulPhone', px + 24, py + 26 + 34 - 34 + 24);
+    ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = '#9d94b8';
+    ctx.fillText('Bahía Azul · golden hour · ' + CONTACTS.length + ' contacts', px + 24, py + 78);
+    // messages, newest at the bottom like a real chat
+    let y = py + 104;
+    const msgs = G.messages.slice(-9);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(px + 16, py + 92, pw - 32, ph - 160); ctx.clip();
+    for (const m of msgs) {
+      const c = CONTACTS.find(k => k.name === m.from);
+      ctx.fillStyle = c ? c.color : '#ffd23f';
+      ctx.font = 'bold 12.5px system-ui, sans-serif';
+      ctx.fillText(m.from, px + 26, y);
+      ctx.fillStyle = '#e8e2f2';
+      ctx.font = '13.5px system-ui, sans-serif';
+      y = wrapText(ctx, m.text, px + 26, y + 17, pw - 56, 17) + 14;
+      if (y > py + ph - 80) break;
+    }
+    ctx.restore();
+    ctx.fillStyle = '#9d94b8'; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('T / Esc — put the phone away', px + pw / 2, py + ph - 22);
+    ctx.textAlign = 'left';
   }
-  for (const m of msgs) {
-    ctx.fillStyle = '#1d2231'; roundRect(ctx, x + 16, cy - 16, w - 32, 52, 10); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 13px system-ui';
-    ctx.fillText(m.from, x + 26, cy + 2);
-    ctx.fillStyle = '#e6e9f2'; ctx.font = '13.5px system-ui';
-    wrapText(ctx, m.text, x + 26, cy + 20, w - 52, 16, 2);
-    cy += 60;
-  }
-  ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui'; ctx.textAlign = 'center';
-  ctx.fillText('T / Esc — put the phone away', x + w / 2, y + h - 18);
-  ctx.textAlign = 'left';
-}
 
-export function wrapText(ctx, text, x, y, maxW, lineH, maxLines) {
-  const words = text.split(' ');
-  let line = '', lines = 0;
-  for (const word of words) {
-    const test = line ? line + ' ' + word : word;
-    if (ctx.measureText(test).width > maxW && line) {
-      ctx.fillText(line, x, y + lines * lineH);
-      lines++; line = word;
-      if (lines >= maxLines) return;
-    } else line = test;
+  function wrapText(ctx, text, x, y, maxW, lh) {
+    const words = text.split(' ');
+    let line = '';
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) { ctx.fillText(line, x, y); y += lh; line = w; }
+      else line = test;
+    }
+    if (line) { ctx.fillText(line, x, y); y += lh; }
+    return y;
   }
-  if (lines < maxLines) ctx.fillText(line, x, y + lines * lineH);
-}
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  return { CONTACTS, addMessage, draw, roundRect };
+})();

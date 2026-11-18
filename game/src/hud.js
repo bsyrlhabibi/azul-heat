@@ -1,247 +1,243 @@
-// hud.js — everything drawn over the world: status bars, wanted stars,
-// the speedometer, objective and prompt lines, the district banner, the
-// phone toast, and the full-screen menus (title, pause, cards, shop,
-// wasted / busted).
+'use strict';
+/* Azul Heat — the HUD and the screens. In play: minimap, wanted stars,
+   cash, health and armour, the objective line, the speedometer, context
+   prompts, dialogue and banners. Around it: title, character select
+   and pause — all drawn in the same golden-hour voice. */
+AH.Hud = (function () {
+  const U = AH.U, C = AH.CFG;
 
-import { VIEW_W, VIEW_H, CONTROLS_TEXT, RUNNERS } from './config.js';
-import { G, activeRunner, activeDef } from './state.js';
-import { stars } from './police.js';
-import { carSpeed } from './vehicles.js';
-import { roundRect } from './vehicles.js';
-import { SHOP_ITEMS } from './economy.js';
-import { STATION_NAMES } from './audio.js';
-import { hasSave } from './save.js';
-import { wrapText } from './phone.js';
-
-function bar(ctx, x, y, w, h, frac, color, bg = 'rgba(10,10,16,0.62)') {
-  ctx.fillStyle = bg; roundRect(ctx, x, y, w, h, h / 2); ctx.fill();
-  if (frac > 0.01) { ctx.fillStyle = color; roundRect(ctx, x, y, Math.max(h, w * Math.min(1, frac)), h, h / 2); ctx.fill(); }
-}
-
-export function drawHUD(ctx) {
-  const r = activeRunner(), def = activeDef();
-  // Top-left: who, health, armor, cash.
-  ctx.fillStyle = 'rgba(10,10,18,0.55)'; roundRect(ctx, 16, 14, 232, 76, 10); ctx.fill();
-  ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 15px system-ui';
-  ctx.fillText(def.name.toUpperCase(), 28, 36);
-  bar(ctx, 28, 44, 150, 10, r.hp / 100, r.hp > 30 ? '#53d769' : '#ff5d5d');
-  bar(ctx, 28, 58, 150, 7, r.armor / 100, '#7fd4ff');
-  ctx.fillStyle = '#7bf1a8'; ctx.font = 'bold 17px system-ui';
-  ctx.fillText('$' + G.cash, 190, 62);
-  ctx.fillStyle = '#c8cede'; ctx.font = '12px system-ui';
-  if (!r.car) ctx.fillText(`🔫 ${r.ammo}`, 190, 80);
-  // Top-right: wanted stars and the bust meter.
-  const st = stars();
-  ctx.font = '26px system-ui'; ctx.textAlign = 'right';
-  for (let i = 0; i < 5; i++) {
-    ctx.fillStyle = i < st ? '#ffd23f' : 'rgba(200,205,220,0.28)';
-    ctx.fillText('★', VIEW_W - 22 - (4 - i) * 30, 42);
-  }
-  ctx.textAlign = 'left';
-  if (G.wanted.bust > 0.03) {
-    ctx.fillStyle = '#ff5d5d'; ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'right';
-    ctx.fillText('BUSTED?', VIEW_W - 22, 66); ctx.textAlign = 'left';
-    bar(ctx, VIEW_W - 172, 72, 150, 8, G.wanted.bust, '#ff5d5d');
-  }
-  if (G.muted) { ctx.fillStyle = '#8b93a7'; ctx.font = '12px system-ui'; ctx.textAlign = 'right'; ctx.fillText('🔇 MUTED (N)', VIEW_W - 22, 96); ctx.textAlign = 'left'; }
-  // District banner.
-  if (G.bannerT > 0) {
-    const a = Math.min(1, G.bannerT / 0.8);
-    ctx.globalAlpha = a;
-    ctx.fillStyle = 'rgba(10,10,18,0.5)'; roundRect(ctx, VIEW_W / 2 - 170, 86, 340, 52, 12); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 25px system-ui'; ctx.textAlign = 'center';
-    ctx.fillText(G.district.toUpperCase(), VIEW_W / 2, 121);
-    ctx.globalAlpha = 1; ctx.textAlign = 'left';
-  }
-  // Phone toast: the newest message, briefly.
-  const last = G.messages[G.messages.length - 1];
-  if (last && G.time - last.t < 4.5 && G.screen === 'play') {
-    ctx.fillStyle = 'rgba(10,12,20,0.78)'; roundRect(ctx, VIEW_W / 2 - 250, 148, 500, 40, 10); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 12.5px system-ui';
-    ctx.fillText('📱 ' + last.from, VIEW_W / 2 - 236, 164);
-    ctx.fillStyle = '#e6e9f2'; ctx.font = '12.5px system-ui';
-    const txt = last.text.length > 58 ? last.text.slice(0, 58) + '…' : last.text;
-    ctx.fillText(txt, VIEW_W / 2 - 236, 180);
-  }
-  // Bottom-right: speedometer in a car.
-  if (r.car) {
-    const kmh = Math.round(carSpeed(r.car) * 0.42);
-    ctx.fillStyle = 'rgba(10,10,18,0.55)'; roundRect(ctx, VIEW_W - 218, VIEW_H - 96, 202, 80, 10); ctx.fill();
-    ctx.fillStyle = '#f4f1e6'; ctx.font = 'bold 30px system-ui'; ctx.textAlign = 'right';
-    ctx.fillText(String(kmh), VIEW_W - 66, VIEW_H - 50);
-    ctx.font = '12px system-ui'; ctx.fillStyle = '#8b93a7';
-    ctx.fillText('km/h', VIEW_W - 26, VIEW_H - 50);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#c8cede'; ctx.font = '12.5px system-ui';
-    ctx.fillText(r.car.def.name + (G.radio ? ' · ♪ ' + STATION_NAMES[G.radio] : ''), VIEW_W - 204, VIEW_H - 68);
-    bar(ctx, VIEW_W - 204, VIEW_H - 34, 150, 6, r.car.hp / r.car.maxHp, '#ffb703');
-  }
-  // Bottom-centre: objective, then the contextual prompt.
-  if (G.objective) {
-    ctx.font = 'bold 15px system-ui';
-    const w = Math.min(760, ctx.measureText(G.objective).width + 40);
-    ctx.fillStyle = 'rgba(10,10,18,0.62)'; roundRect(ctx, (VIEW_W - w) / 2, VIEW_H - 52, w, 34, 9); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.textAlign = 'center';
-    ctx.fillText('◎ ' + G.objective, VIEW_W / 2, VIEW_H - 29);
-    ctx.textAlign = 'left';
-  }
-  if (G.prompt) {
-    ctx.font = 'bold 14.5px system-ui';
-    const w = ctx.measureText(G.prompt).width + 34;
-    ctx.fillStyle = 'rgba(255,210,63,0.92)'; roundRect(ctx, (VIEW_W - w) / 2, VIEW_H - 92, w, 30, 9); ctx.fill();
-    ctx.fillStyle = '#191408'; ctx.textAlign = 'center';
-    ctx.fillText(G.prompt, VIEW_W / 2, VIEW_H - 71);
-    ctx.textAlign = 'left';
-  }
-  // World-space floaters (+$400 and friends), projected to the screen.
-  ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center';
-  for (const f of G.floaters) {
-    ctx.globalAlpha = Math.max(0, 1 - f.t / 1.4);
-    ctx.fillStyle = f.color;
-    ctx.fillText(f.text, f.x - G.cam.x, f.y - G.cam.y);
-  }
-  ctx.globalAlpha = 1; ctx.textAlign = 'left';
-}
-
-export function drawTitle(ctx) {
-  const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-  grad.addColorStop(0, 'rgba(24,8,38,0.42)'); grad.addColorStop(1, 'rgba(24,8,38,0.78)');
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  ctx.textAlign = 'center';
-  const titleGrad = ctx.createLinearGradient(0, 90, 0, 190);
-  titleGrad.addColorStop(0, '#ffe259'); titleGrad.addColorStop(0.55, '#ffa751'); titleGrad.addColorStop(1, '#ff5e8a');
-  ctx.fillStyle = titleGrad;
-  ctx.font = '900 96px system-ui';
-  ctx.fillText('AZUL HEAT', VIEW_W / 2, 178);
-  ctx.fillStyle = '#f4f1e6'; ctx.font = 'bold 25px system-ui';
-  ctx.fillText('— T W O   R U N N E R S —', VIEW_W / 2, 222);
-  ctx.fillStyle = '#c8cede'; ctx.font = '16px system-ui';
-  ctx.fillText('An open-world crime story in the sunset city of Bahía Azul.', VIEW_W / 2, 254);
-  ctx.fillText('Steal cars. Run jobs for Tía Carmen, El Contador and DJ Prisma. Outrun the heat — together.', VIEW_W / 2, 278);
-  // Runner cards.
-  for (const [i, id] of ['lucia', 'marco'].entries()) {
-    const d = RUNNERS[id], x = VIEW_W / 2 - 330 + i * 340, y = 308;
-    ctx.fillStyle = 'rgba(14,14,24,0.78)'; roundRect(ctx, x, y, 320, 118, 14); ctx.fill();
-    ctx.strokeStyle = d.accent; ctx.lineWidth = 2; roundRect(ctx, x, y, 320, 118, 14); ctx.stroke();
-    ctx.fillStyle = d.top; roundRect(ctx, x + 16, y + 16, 46, 46, 10); ctx.fill();
-    ctx.fillStyle = d.skin; ctx.beginPath(); ctx.arc(x + 39, y + 34, 11, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 19px system-ui'; ctx.textAlign = 'left';
-    ctx.fillText(d.name, x + 76, y + 40);
-    ctx.fillStyle = '#c8cede'; ctx.font = '13px system-ui';
-    wrapText(ctx, d.role, x + 76, y + 62, 228, 17, 2);
-    ctx.fillStyle = '#8b93a7';
-    ctx.fillText(id === 'lucia' ? 'Handling ★★★★★ · Durability ★★★' : 'Handling ★★★ · Durability ★★★★★', x + 16, y + 98);
-  }
-  // Menu.
-  const items = hasSave() ? ['CONTINUE', 'NEW GAME'] : ['NEW GAME'];
-  ctx.font = 'bold 21px system-ui';
-  items.forEach((label, i) => {
-    const y = 486 + i * 40, sel = G.titleSel === i;
-    if (sel) { ctx.fillStyle = 'rgba(255,210,63,0.9)'; roundRect(ctx, VIEW_W / 2 - 130, y - 27, 260, 36, 9); ctx.fill(); }
-    ctx.fillStyle = sel ? '#191408' : '#f4f1e6';
-    ctx.fillText((sel ? '▶ ' : '') + label, VIEW_W / 2, y);
-  });
-  // Controls.
-  ctx.fillStyle = 'rgba(14,14,24,0.66)'; roundRect(ctx, VIEW_W / 2 - 330, 580, 660, 168, 14); ctx.fill();
-  ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 14px system-ui';
-  ctx.fillText('CONTROLS', VIEW_W / 2, 606);
-  ctx.fillStyle = '#c8cede'; ctx.font = '13.5px system-ui';
-  CONTROLS_TEXT.forEach((line, i) => {
-    const col = i % 2, row = Math.floor(i / 2);
-    ctx.textAlign = col ? 'left' : 'right';
-    ctx.fillText(line, VIEW_W / 2 + (col ? 14 : -14), 634 + row * 26);
-  });
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui';
-  ctx.fillText('Enter / Click — start · ↑ ↓ — choose', VIEW_W / 2, 776);
-  ctx.textAlign = 'left';
-}
-
-export function drawPause(ctx) {
-  ctx.fillStyle = 'rgba(10,8,18,0.66)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd23f'; ctx.font = '900 52px system-ui';
-  ctx.fillText('PAUSED', VIEW_W / 2, 240);
-  ctx.fillStyle = '#c8cede'; ctx.font = '15px system-ui';
-  CONTROLS_TEXT.forEach((line, i) => ctx.fillText(line, VIEW_W / 2, 300 + i * 26));
-  ctx.fillStyle = '#8b93a7';
-  ctx.fillText('P / Esc — back to the streets · progress saves at the safehouse', VIEW_W / 2, 300 + CONTROLS_TEXT.length * 26 + 16);
-  ctx.textAlign = 'left';
-}
-
-// Split a card's lines into wrapped rows at the card's text width.
-function cardRows(ctx, lines, maxW) {
-  const rows = [];
-  for (const line of lines) {
-    let cur = '';
-    for (const word of line.split(' ')) {
-      const test = cur ? cur + ' ' + word : word;
-      if (ctx.measureText(test).width > maxW && cur) { rows.push(cur); cur = word; }
-      else cur = test;
+  function star(ctx, x, y, r, filled) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rad = i % 2 === 0 ? r : r * 0.45;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
-    if (cur) rows.push(cur);
-    rows.push(''); // breathing room between paragraphs
+    ctx.closePath();
+    if (filled) { ctx.fillStyle = '#ffd23f'; ctx.fill(); }
+    ctx.strokeStyle = 'rgba(245,240,230,0.8)'; ctx.lineWidth = 1.4; ctx.stroke();
   }
-  return rows;
-}
 
-export function drawCard(ctx) {
-  const card = G.card;
-  if (!card) return;
-  ctx.fillStyle = 'rgba(8,8,16,0.55)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  const w = 620;
-  ctx.font = '15.5px system-ui';
-  const rows = cardRows(ctx, card.lines, w - 56);
-  const h = 128 + rows.length * 22, x = (VIEW_W - w) / 2, y = (VIEW_H - h) / 2;
-  ctx.fillStyle = '#14161f'; roundRect(ctx, x, y, w, h, 16); ctx.fill();
-  ctx.strokeStyle = card.kind === 'failed' ? '#ff5d5d' : '#ffd23f'; ctx.lineWidth = 2.4;
-  roundRect(ctx, x, y, w, h, 16); ctx.stroke();
-  ctx.fillStyle = card.kind === 'failed' ? '#ff5d5d' : '#ffd23f';
-  ctx.font = 'bold 25px system-ui';
-  ctx.fillText(card.title, x + 28, y + 46);
-  ctx.fillStyle = '#e6e9f2'; ctx.font = '15.5px system-ui';
-  rows.forEach((row, i) => { if (row) ctx.fillText(row, x + 28, y + 84 + i * 22); });
-  ctx.fillStyle = '#8b93a7'; ctx.font = '13.5px system-ui';
-  ctx.fillText(card.kind === 'offer' ? 'E / Click — take the job · Esc — not now' : 'E / Click / Esc — continue', x + 28, y + h - 18);
-}
+  function prompt() {
+    const G = AH.G, P = G.player;
+    if (!P) return null;
+    if (G.dialogue) return 'E — next line';
+    if (P.inCar) return 'E — step out · H horn · 1/2/3 radio';
+    const car = AH.Vehicles.nearestEnterable(P.x, P.y, 52);
+    if (car) return car.mode === 'traffic' ? 'E — CARJACK the ' + car.def.name : 'E — Drive the ' + car.def.name;
+    return AH.Story.prompt() || AH.Gigs.prompt(P.x, P.y) || AH.Economy.promptAt(P.x, P.y);
+  }
 
-export function drawShop(ctx) {
-  ctx.fillStyle = 'rgba(8,8,16,0.6)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  const w = 520, h = 330, x = (VIEW_W - w) / 2, y = (VIEW_H - h) / 2;
-  ctx.fillStyle = '#14161f'; roundRect(ctx, x, y, w, h, 16); ctx.fill();
-  ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 2.4; roundRect(ctx, x, y, w, h, 16); ctx.stroke();
-  ctx.fillStyle = '#ffd166'; ctx.font = 'bold 24px system-ui';
-  ctx.fillText('AMMU-NACIÓN', x + 26, y + 44);
-  ctx.fillStyle = '#7bf1a8'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'right';
-  ctx.fillText('$' + G.cash, x + w - 26, y + 44); ctx.textAlign = 'left';
-  SHOP_ITEMS.forEach((item, i) => {
-    const iy = y + 78 + i * 62;
-    ctx.fillStyle = '#1d2231'; roundRect(ctx, x + 20, iy, w - 40, 52, 10); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 16px system-ui';
-    ctx.fillText(`${i + 1}. ${item.name}`, x + 36, iy + 22);
-    ctx.fillStyle = '#8b93a7'; ctx.font = '13px system-ui';
-    ctx.fillText(item.desc, x + 36, iy + 41);
-    ctx.fillStyle = '#7bf1a8'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'right';
-    ctx.fillText('$' + item.price, x + w - 36, iy + 30); ctx.textAlign = 'left';
-  });
-  const r = activeRunner();
-  ctx.fillStyle = '#c8cede'; ctx.font = '13.5px system-ui';
-  ctx.fillText(`Health ${Math.round(r.hp)} · Armor ${Math.round(r.armor)} · Ammo ${r.ammo}`, x + 26, y + h - 44);
-  ctx.fillStyle = '#8b93a7';
-  ctx.fillText('Press 1 / 2 / 3 to buy · E / Esc — leave', x + 26, y + h - 18);
-}
+  function drawPlay(ctx) {
+    const G = AH.G, P = G.player, W = C.viewW, H = C.viewH;
+    AH.Minimap.draw(ctx);
+    // health + armour beside the minimap
+    const bx = 208, bw = 190;
+    ctx.fillStyle = 'rgba(10,8,20,0.55)'; AH.Phone.roundRect(ctx, bx - 6, H - 64, bw + 12, 40, 8); ctx.fill();
+    ctx.fillStyle = '#3a1522'; AH.Phone.roundRect(ctx, bx, H - 56, bw, 11, 5); ctx.fill();
+    ctx.fillStyle = '#ff5964'; AH.Phone.roundRect(ctx, bx, H - 56, bw * U.clamp(P.hp, 0, 100) / 100, 11, 5); ctx.fill();
+    ctx.fillStyle = '#22303e'; AH.Phone.roundRect(ctx, bx, H - 40, bw, 8, 4); ctx.fill();
+    ctx.fillStyle = '#37a0ff'; AH.Phone.roundRect(ctx, bx, H - 40, bw * U.clamp(P.armor, 0, 100) / 100, 8, 4); ctx.fill();
+    // wanted stars + cash, top right
+    for (let i = 0; i < 5; i++) star(ctx, W - 178 + i * 34, 34, 13, i < G.wanted);
+    if (G.wanted > 0 && G.seenTimer < 2) { ctx.fillStyle = 'rgba(255,64,64,' + (0.5 + Math.sin(G.time * 8) * 0.3) + ')'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillText('POLICE ON YOU', W - 24, 62); ctx.textAlign = 'left'; }
+    ctx.fillStyle = '#8dff57'; ctx.font = 'bold 25px system-ui, sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText('$' + G.cash, W - 24, 96);
+    ctx.fillStyle = 'rgba(245,240,230,0.85)'; ctx.font = '13px system-ui, sans-serif';
+    const di = AH.World.districtAt(P.x, P.y);
+    ctx.fillText(AH.DISTRICTS[di].name + ' · rep ' + Math.round(G.rep[di]) + '%', W - 24, 118);
+    ctx.textAlign = 'left';
+    // objective, top centre
+    const obj = AH.Story.objective();
+    if (obj) {
+      ctx.font = 'bold 16.5px system-ui, sans-serif';
+      const tw = ctx.measureText(obj.label).width + 34;
+      ctx.fillStyle = 'rgba(10,8,20,0.58)'; AH.Phone.roundRect(ctx, (W - tw) / 2, 16, tw, 32, 9); ctx.fill();
+      ctx.fillStyle = '#ffd23f'; ctx.textAlign = 'center';
+      ctx.fillText('◆ ' + obj.label, W / 2, 38);
+      ctx.textAlign = 'left';
+      // off-screen direction arrow
+      const dx = obj.x - P.x, dy = obj.y - P.y, d = Math.hypot(dx, dy);
+      if (d > 60) {
+        ctx.fillStyle = 'rgba(255,210,63,0.9)'; ctx.font = '12.5px system-ui, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(Math.round(d / 10) + 'm ' + (Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? '→' : '←') : (dy > 0 ? '↓' : '↑')), W / 2, 62);
+        ctx.textAlign = 'left';
+      }
+    }
+    // speedometer
+    if (P.inCar) {
+      const kmh = Math.round(Math.abs(P.inCar.speed) * 0.62);
+      ctx.fillStyle = 'rgba(10,8,20,0.55)'; AH.Phone.roundRect(ctx, W - 168, H - 84, 144, 60, 10); ctx.fill();
+      ctx.fillStyle = '#f5f0e6'; ctx.font = 'bold 30px system-ui, sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText(kmh, W - 62, H - 44);
+      ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = '#9d94b8';
+      ctx.fillText('km/h', W - 30, H - 44);
+      ctx.fillStyle = P.inCar.hp < 30 ? '#ff5964' : '#8dff57'; ctx.font = '11.5px system-ui, sans-serif';
+      ctx.fillText(P.inCar.def.name + ' · hull ' + Math.ceil(P.inCar.hp) + '%', W - 30, H - 62 + 34);
+      ctx.textAlign = 'left';
+    }
+    // bust progress
+    if (G.bustTimer > 0) {
+      ctx.fillStyle = 'rgba(10,8,20,0.6)'; AH.Phone.roundRect(ctx, W / 2 - 110, H - 150, 220, 16, 8); ctx.fill();
+      ctx.fillStyle = '#ff4040'; AH.Phone.roundRect(ctx, W / 2 - 110, H - 150, 220 * (G.bustTimer / 1.6), 16, 8); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText('BUSTED… RUN!', W / 2, H - 138); ctx.textAlign = 'left';
+    }
+    // context prompt
+    const pr = prompt();
+    if (pr && !G.overlay) {
+      ctx.font = 'bold 15px system-ui, sans-serif';
+      const tw = ctx.measureText(pr).width + 30;
+      ctx.fillStyle = 'rgba(10,8,20,0.66)'; AH.Phone.roundRect(ctx, (W - tw) / 2, H - 118, tw, 30, 8); ctx.fill();
+      ctx.fillStyle = '#f5f0e6'; ctx.textAlign = 'center'; ctx.fillText(pr, W / 2, H - 97); ctx.textAlign = 'left';
+    }
+    // dialogue box
+    if (G.dialogue) {
+      const line = G.dialogue.lines[G.dialogue.i];
+      ctx.fillStyle = 'rgba(12,8,22,0.88)'; AH.Phone.roundRect(ctx, W / 2 - 330, H - 208, 660, 86, 12); ctx.fill();
+      ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 1.6; AH.Phone.roundRect(ctx, W / 2 - 330, H - 208, 660, 86, 12); ctx.stroke();
+      ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 15px system-ui, sans-serif';
+      ctx.fillText(line[0], W / 2 - 306, H - 178);
+      ctx.fillStyle = '#f5f0e6'; ctx.font = '16.5px system-ui, sans-serif';
+      ctx.fillText(line[1], W / 2 - 306, H - 150);
+      ctx.fillStyle = '#9d94b8'; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText('E ▸', W / 2 + 306, H - 134); ctx.textAlign = 'left';
+    }
+    // banner + toast + district card
+    if (G.banner) {
+      const b = G.banner, a = Math.min(1, b.t * 3, (b.dur - b.t) * 1.4);
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 40px system-ui, sans-serif';
+      ctx.strokeStyle = 'rgba(10,6,18,0.85)'; ctx.lineWidth = 7; ctx.strokeText(b.title, W / 2, 168);
+      ctx.fillStyle = b.color; ctx.fillText(b.title, W / 2, 168);
+      ctx.font = '16.5px system-ui, sans-serif';
+      ctx.strokeStyle = 'rgba(10,6,18,0.8)'; ctx.lineWidth = 4; ctx.strokeText(b.sub, W / 2, 198);
+      ctx.fillStyle = '#f5f0e6'; ctx.fillText(b.sub, W / 2, 198);
+      ctx.textAlign = 'left'; ctx.globalAlpha = 1;
+    }
+    if (G.toast) {
+      ctx.font = '14px system-ui, sans-serif';
+      const tw = ctx.measureText(G.toast.text).width + 26;
+      ctx.fillStyle = 'rgba(12,8,22,0.82)'; AH.Phone.roundRect(ctx, (W - tw) / 2, 128 + (G.banner ? 76 : 0), tw, 28, 8); ctx.fill();
+      ctx.fillStyle = '#f5f0e6'; ctx.textAlign = 'center'; ctx.fillText(G.toast.text, W / 2, 147 + (G.banner ? 76 : 0)); ctx.textAlign = 'left';
+    }
+    if (G.districtTimer > 0) {
+      ctx.globalAlpha = Math.min(1, G.districtTimer);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.strokeStyle = 'rgba(10,6,18,0.8)'; ctx.lineWidth = 6; ctx.strokeText(G.districtName.toUpperCase(), W / 2, H - 240);
+      ctx.fillStyle = '#ffd9a0'; ctx.fillText(G.districtName.toUpperCase(), W / 2, H - 240);
+      ctx.textAlign = 'left'; ctx.globalAlpha = 1;
+    }
+  }
 
-export function drawEndScreen(ctx) {
-  const wasted = G.screen === 'wasted';
-  ctx.fillStyle = wasted ? 'rgba(60,4,10,0.55)' : 'rgba(8,14,40,0.55)';
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = wasted ? '#ff5d5d' : '#7fd4ff';
-  ctx.font = '900 84px system-ui';
-  ctx.fillText(wasted ? 'WASTED' : 'BUSTED', VIEW_W / 2, VIEW_H / 2 - 20);
-  ctx.fillStyle = '#f4f1e6'; ctx.font = '17px system-ui';
-  ctx.fillText(wasted ? 'The hospital patched you up — for a price.' : 'The Bahía PD let you go — for a price.', VIEW_W / 2, VIEW_H / 2 + 24);
-  ctx.fillStyle = '#8b93a7'; ctx.font = '14px system-ui';
-  ctx.fillText('Enter — back to the streets', VIEW_W / 2, VIEW_H / 2 + 58);
-  ctx.textAlign = 'left';
-}
+  function drawFigure(ctx, x, y, def, scale) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(2, 8, 13, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = def.pants; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-5, 12); ctx.moveTo(0, 0); ctx.lineTo(5, 12); ctx.stroke();
+    ctx.fillStyle = def.shirt; AH.Phone.roundRect(ctx, -9, -22, 18, 21, 6); ctx.fill();
+    ctx.fillStyle = def.skin; ctx.beginPath(); ctx.arc(0, -29, 7.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = def.hair; ctx.beginPath(); ctx.arc(0, -31, 7.3, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawTitle(ctx) {
+    const W = C.viewW, H = C.viewH;
+    ctx.fillStyle = 'rgba(24,8,30,0.34)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.save();
+    ctx.shadowColor = '#ff4fd8'; ctx.shadowBlur = 34;
+    ctx.fillStyle = '#ffd23f'; ctx.font = '900 96px system-ui, sans-serif';
+    ctx.fillText('AZUL HEAT', W / 2, 218);
+    ctx.restore();
+    ctx.fillStyle = '#f5f0e6'; ctx.font = 'bold 27px system-ui, sans-serif';
+    ctx.fillText('T W O   R U N N E R S', W / 2, 262);
+    ctx.font = '16.5px system-ui, sans-serif'; ctx.fillStyle = '#ffd9a0';
+    ctx.fillText('An original open-world crime story in the city of Bahía Azul — two runners, six districts, one long sunset.', W / 2, 300);
+    ctx.fillStyle = 'rgba(245,240,230,0.92)'; ctx.font = '15px system-ui, sans-serif';
+    const lines = [
+      'Steal cars, run missions for Tía Carmen, El Contador and DJ Prisma,',
+      'outrun the Policía — patrols, roadblocks and a helicopter — and buy your way up the coast.',
+      '',
+      'WASD drive & walk · E interact · TAB switch runner · T phone · M map · mouse aim, click to shoot',
+    ];
+    lines.forEach((l, i) => ctx.fillText(l, W / 2, 356 + i * 23));
+    ctx.save();
+    ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = 16;
+    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 22px system-ui, sans-serif';
+    ctx.fillText(AH.Save.read() ? 'PRESS ENTER — CONTINUE YOUR RUN' : 'PRESS ENTER — START', W / 2, 520);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(245,240,230,0.65)'; ctx.font = '13px system-ui, sans-serif';
+    ctx.fillText(AH.Save.read() ? 'N — wipe the save and start over' : 'Your run saves itself at every payday.', W / 2, 552);
+    ctx.textAlign = 'left';
+  }
+
+  function drawSelect(ctx) {
+    const G = AH.G, W = C.viewW, H = C.viewH;
+    ctx.fillStyle = 'rgba(24,8,30,0.52)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f5f0e6'; ctx.font = 'bold 34px system-ui, sans-serif';
+    ctx.fillText('CHOOSE YOUR RUNNER', W / 2, 120);
+    ctx.font = '15px system-ui, sans-serif'; ctx.fillStyle = '#ffd9a0';
+    ctx.fillText('You can switch between them any time with TAB — the city keeps both.', W / 2, 148);
+    AH.Chars.list.forEach((def, i) => {
+      const cx = W / 2 + (i === 0 ? -190 : 190), cy = 300;
+      const sel = G.selectIdx === i;
+      ctx.fillStyle = sel ? 'rgba(255,210,63,0.16)' : 'rgba(16,12,28,0.72)';
+      AH.Phone.roundRect(ctx, cx - 150, cy - 130, 300, 320, 16); ctx.fill();
+      ctx.strokeStyle = sel ? '#ffd23f' : '#3a3350'; ctx.lineWidth = sel ? 3 : 1.6;
+      AH.Phone.roundRect(ctx, cx - 150, cy - 130, 300, 320, 16); ctx.stroke();
+      drawFigure(ctx, cx, cy - 10, def, 2.6);
+      ctx.fillStyle = '#f5f0e6'; ctx.font = 'bold 23px system-ui, sans-serif';
+      ctx.fillText(def.name, cx, cy + 116);
+      ctx.fillStyle = '#ffd9a0'; ctx.font = '14.5px system-ui, sans-serif';
+      ctx.fillText(def.role, cx, cy + 142);
+      ctx.fillStyle = 'rgba(245,240,230,0.7)'; ctx.font = '12.5px system-ui, sans-serif';
+      ctx.fillText(i === 0 ? 'The fastest courier on the coast.' : 'If it has wheels, he can fix it — or take it.', cx, cy + 166);
+    });
+    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 17px system-ui, sans-serif';
+    ctx.fillText('← → choose · ENTER run · or click a runner', W / 2, 620);
+    ctx.textAlign = 'left';
+  }
+
+  function drawPause(ctx) {
+    const G = AH.G, W = C.viewW, H = C.viewH;
+    ctx.fillStyle = 'rgba(14,8,22,0.66)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#1d1830'; AH.Phone.roundRect(ctx, W / 2 - 240, 150, 480, 470, 18); ctx.fill();
+    ctx.strokeStyle = '#3a3350'; ctx.lineWidth = 2; AH.Phone.roundRect(ctx, W / 2 - 240, 150, 480, 470, 18); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.fillText('PAUSED', W / 2, 208);
+    ctx.fillStyle = '#f5f0e6'; ctx.font = '15.5px system-ui, sans-serif';
+    const rows = [
+      'P / Esc — back to the streets',
+      'S — save the run now',
+      'T — phone · M — city map',
+      'N — ' + (G.muted ? 'unmute' : 'mute') + ' all sound',
+      'X — wipe save & restart from zero',
+      '',
+      'Cash $' + G.cash + ' · Story ' + G.storyDone + '/' + AH.MISSIONS.length,
+      'Cars stolen ' + G.stats.stolen + ' · Races ' + G.stats.racesWon + ' · Deliveries ' + G.stats.deliveries,
+      '',
+      'Controls: WASD walk/drive · mouse aim · click shoot',
+      'E enter/steal/talk/buy · Space handbrake · Shift sprint',
+      'TAB switch runner · H horn · 1/2/3 radio stations',
+    ];
+    rows.forEach((l, i) => ctx.fillText(l, W / 2, 256 + i * 27));
+    ctx.textAlign = 'left';
+  }
+
+  function draw(ctx) {
+    const G = AH.G;
+    if (G.screen === 'title') { drawTitle(ctx); return; }
+    if (G.screen === 'select') { drawSelect(ctx); return; }
+    drawPlay(ctx);
+    if (G.overlay === 'map') AH.Minimap.drawMap(ctx);
+    else if (G.overlay === 'phone') AH.Phone.draw(ctx);
+    else if (G.overlay === 'pause') drawPause(ctx);
+  }
+
+  return { draw, prompt };
+})();

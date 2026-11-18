@@ -1,156 +1,156 @@
-// story.js — runs the story missions: offers them at contacts, sets up
-// each step (spawning the car to steal or the thugs to fight), watches
-// for completion or failure, and pays out with reputation on success.
+'use strict';
+/* Azul Heat — the story runner. Offers the next mission at its giver,
+   walks the stage list (talk / goto / drive / escape / switch / timed),
+   pays out, and keeps the HUD objective honest. */
+AH.Story = (function () {
+  const U = AH.U;
 
-import { CONTACTS } from './config.js';
-import { G, activeRunner, addFloater, addMessage } from './state.js';
-import { MISSIONS } from './missions.js';
-import { makeCar } from './vehicles.js';
-import { makePed } from './pedestrians.js';
-import { dist } from './random.js';
-import { stars } from './police.js';
-import { addCash, addRep } from './economy.js';
-import { saveGame } from './save.js';
-import { sfx } from './audio.js';
-
-function contactName(id) { const c = CONTACTS.find((k) => k.id === id); return c ? c.name : id; }
-
-// The next mission this contact offers the active runner, if any.
-export function missionOffer(contactId) {
-  for (const def of MISSIONS) {
-    if (def.contact !== contactId || G.missionsDone.includes(def.id)) continue;
-    if (def.who !== 'both' && def.who !== G.active) continue;
-    if (def.requires && G.missionsDone.length < def.requires) return { locked: def };
-    return { def };
+  function targetOf(at) {
+    if (!at) return null;
+    if (typeof at === 'string') return AH.PLACES[at];
+    return at;
   }
-  return null;
-}
 
-export function talkToContact(contactId) {
-  if (G.mission) {
-    G.card = { kind: 'chat', title: contactName(contactId), lines: ['"You have work already, mi amor. Finish it, then we talk."'] };
-    G.screen = 'card';
-    return;
+  function currentDef() {
+    const G = AH.G;
+    return G.storyDone < AH.MISSIONS.length ? AH.MISSIONS[G.storyDone] : null;
   }
-  const offer = missionOffer(contactId);
-  if (!offer) {
-    G.card = { kind: 'chat', title: contactName(contactId), lines: ['"Bahía Azul provides, if you keep moving. Check the map for work."'] };
-    G.screen = 'card';
-    return;
-  }
-  if (offer.locked) {
-    G.card = { kind: 'chat', title: contactName(contactId), lines: [`"${offer.locked.title}" is family business — earn your name first (${G.missionsDone.length}/${offer.locked.requires} jobs done).`] };
-    G.screen = 'card';
-    return;
-  }
-  G.card = { kind: 'offer', title: offer.def.title, lines: offer.def.briefing, missionId: offer.def.id };
-  G.screen = 'card';
-  sfx.message();
-}
 
-export function startMission(def) {
-  G.mission = { def, i: 0, step: null, data: {} };
-  G.screen = 'play';
-  addMessage(contactName(def.contact), `Job started: ${def.title}. Follow the gold marker.`);
-  sfx.pickup();
-  setupStep();
-}
-
-function setupStep() {
-  const m = G.mission;
-  const step = m.def.steps[m.i];
-  m.step = step; m.data = {};
-  if (step.t === 'timed') m.data.tLeft = step.seconds;
-  if (step.t === 'steal') {
-    const car = makeCar(step.carModel, step.carAt.x, step.carAt.y, step.carAt.angle, { color: step.carColor, parked: true });
-    car.missionCar = true;
-    G.cars.push(car);
-    m.data.car = car;
+  function tryInteract(x, y) {
+    const G = AH.G;
+    if (G.mission || G.dialogue) return false;
+    const def = currentDef();
+    if (!def) return false;
+    const gp = AH.PLACES[def.giver];
+    if (U.dist(x, y, gp.x, gp.y) > 64) return false;
+    startMission(def);
+    return true;
   }
-  if (step.t === 'deliver') m.data.car = G.mission.data.car || findMissionCar();
-  if (step.t === 'fight') {
-    for (let i = 0; i < step.count; i++) {
-      const e = makePed(step.x + (i - (step.count - 1) / 2) * 44, step.y + ((i % 2) * 52 - 26), {});
-      e.hostile = true; e.tag = m.def.id; e.hp = 100; e.speed = 104;
-      e.top = '#3a3f4a'; e.bottom = '#22242c';
-      G.enemies.push(e);
+
+  function startMission(def) {
+    const G = AH.G;
+    G.mission = { def, stage: 0, t: 0, switched: false, failOnBust: !!def.failOnBust };
+    for (const m of def.intro) AH.Phone.addMessage(def.from, m);
+    AH.banner('MISSION — ' + def.title.toUpperCase(), 'From ' + def.from + ' · $' + def.reward, '#ffd23f', 3.4);
+    AH.Audio.blip(740);
+    beginStage();
+  }
+
+  function beginStage() {
+    const G = AH.G, st = G.mission.def.stages[G.mission.stage];
+    G.mission.t = st.t === 'timed' ? st.secs : 0;
+    if (st.heat) { AH.Police.setWanted(st.heat); G.wantedFloor = st.t === 'escape' ? 0 : st.heat; }
+    if (st.t === 'drive' && st.heat) G.wantedFloor = st.heat;
+  }
+
+  function advance() {
+    const G = AH.G;
+    G.mission.stage++;
+    G.wantedFloor = 0;
+    if (G.mission.stage >= G.mission.def.stages.length) completeMission();
+    else beginStage();
+  }
+
+  function completeMission() {
+    const G = AH.G, def = G.mission.def, P = G.player;
+    G.mission = null;
+    G.storyDone++;
+    AH.Economy.addCash(def.reward, P.x, P.y);
+    AH.Economy.addRep(P.x, P.y, 12);
+    for (const m of def.outro) AH.Phone.addMessage(def.from, m);
+    AH.banner('MISSION COMPLETE', def.title + ' — $' + def.reward, '#8dff57', 3.8);
+    AH.Audio.fanfare();
+    AH.Save.write();
+  }
+
+  function failMission(reason) {
+    const G = AH.G;
+    if (!G.mission) return;
+    AH.banner('MISSION FAILED', reason, '#ff5964', 3.4);
+    G.mission = null; G.wantedFloor = 0;
+    AH.Audio.blip(160);
+  }
+
+  function startDialogue(lines) {
+    AH.G.dialogue = { lines, i: 0, t: 0 };
+    AH.Audio.blip(880);
+  }
+
+  function updateDialogue(dt) {
+    const G = AH.G;
+    if (!G.dialogue) return;
+    G.dialogue.t += dt;
+    if (AH.Input.pressed('KeyE') || AH.Input.mouse.clicked || G.dialogue.t > 4.2) {
+      G.dialogue.i++; G.dialogue.t = 0;
+      AH.Audio.blip(700);
+      if (G.dialogue.i >= G.dialogue.lines.length) {
+        G.dialogue = null;
+        if (G.mission && G.mission.def.stages[G.mission.stage].t === 'talk') advance();
+      }
     }
   }
-  if (step.t === 'escape' && step.heat) G.wanted.heat = Math.max(G.wanted.heat, step.heat);
-  if (step.t === 'switch') m.data.startActive = G.active;
-  G.objective = step.label;
-  if (step.t === 'steal' && m.data.car) G.marker = { x: m.data.car.x, y: m.data.car.y, color: '#ffd23f' };
-  else if (step.x !== undefined) G.marker = { x: step.x, y: step.y, color: '#ffd23f' };
-  else G.marker = null;
-}
 
-function findMissionCar() { return G.cars.find((c) => c.missionCar) || null; }
-
-function cleanupMission() {
-  G.enemies = G.enemies.filter((e) => e.tag !== G.mission.def.id);
-  const car = findMissionCar();
-  if (car) car.missionCar = false;
-  G.mission = null; G.marker = null; G.objective = '';
-}
-
-function failMission(reason) {
-  const title = G.mission.def.title;
-  cleanupMission();
-  G.card = { kind: 'failed', title: `${title} — FAILED`, lines: [reason, 'The contact will offer the job again.'] };
-  G.screen = 'card';
-  sfx.fail();
-}
-
-function completeMission() {
-  const def = G.mission.def;
-  const r = activeRunner();
-  cleanupMission();
-  G.missionsDone.push(def.id);
-  addCash(def.payout, r.x, r.y);
-  addRep(def.district, 22);
-  addMessage(contactName(def.contact), `Paid $${def.payout} for "${def.title}". Bahía Azul remembers.`);
-  G.card = { kind: 'complete', title: `${def.title} — COMPLETE`, lines: [`+$${def.payout} · ${def.district} reputation up.`, G.missionsDone.length >= 6 ? 'Every job done. The city is yours, runners.' : 'More work waits at the gold markers.'] };
-  G.screen = 'card';
-  sfx.complete();
-  saveGame();
-}
-
-export function updateStory(dt) {
-  const m = G.mission;
-  if (!m) return;
-  const step = m.step, r = activeRunner();
-  let done = false;
-  if (step.t === 'goto' || step.t === 'pickup') {
-    if (step.t === 'pickup' && r.car) { G.objective = step.label + ' (on foot)'; }
-    else if (dist(r.x, r.y, step.x, step.y) < step.r) done = true;
-  } else if (step.t === 'timed') {
-    m.data.tLeft -= dt;
-    G.objective = `${step.label} — ${Math.max(0, Math.ceil(m.data.tLeft))}s`;
-    if (dist(r.x, r.y, step.x, step.y) < step.r) done = true;
-    else if (m.data.tLeft <= 0) { failMission('Out of time. The city does not wait.'); return; }
-  } else if (step.t === 'steal') {
-    if (m.data.car) { G.marker = { x: m.data.car.x, y: m.data.car.y, color: '#ffd23f' }; if (r.car === m.data.car) done = true; }
-  } else if (step.t === 'deliver') {
-    if (r.car === m.data.car && dist(r.x, r.y, step.x, step.y) < step.r) done = true;
-    else if (!m.data.car) { failMission('The car was destroyed.'); return; }
-    if (m.data.car && m.data.car.dead) { failMission('The car was destroyed.'); return; }
-  } else if (step.t === 'fight') {
-    const left = G.enemies.filter((e) => e.tag === m.def.id && !e.down).length;
-    G.objective = `${step.label} (${step.count - left}/${step.count})`;
-    if (left === 0) done = true;
-  } else if (step.t === 'escape') {
-    if (stars() > 0) m.data.wasHot = true;
-    G.objective = step.label + (m.data.wasHot ? '' : ' (heat incoming…)');
-    if (m.data.wasHot && stars() === 0) done = true;
-  } else if (step.t === 'switch') {
-    G.objective = step.label;
-    if (G.active !== m.data.startActive) done = true;
+  function objective() {
+    const G = AH.G;
+    if (G.gig) return AH.Gigs.objective();
+    if (!G.mission) {
+      const def = currentDef();
+      if (!def) return null;
+      const gp = AH.PLACES[def.giver];
+      return { x: gp.x, y: gp.y, label: 'Meet ' + def.from + ' — ' + def.title + ' (E)', giver: true };
+    }
+    const st = G.mission.def.stages[G.mission.stage];
+    const tp = targetOf(st.at);
+    switch (st.t) {
+      case 'talk': return { x: tp.x, y: tp.y, label: 'Talk to ' + st.who };
+      case 'goto': return { x: tp.x, y: tp.y, label: st.label };
+      case 'drive': return { x: tp.x, y: tp.y, label: st.label };
+      case 'timed': return { x: tp.x, y: tp.y, label: st.label + ' — ' + Math.ceil(G.mission.t) + 's' };
+      case 'escape': return { x: G.player.x, y: G.player.y, label: st.label + ' — stay unseen' };
+      case 'switch': return { x: G.partner.x, y: G.partner.y, label: st.label };
+    }
+    return null;
   }
-  if (done) {
-    sfx.pickup();
-    addFloater(r.x, r.y - 28, 'OBJECTIVE DONE', '#7bf1a8');
-    m.i++;
-    if (m.i >= m.def.steps.length) completeMission();
-    else setupStep();
+
+  function update(dt) {
+    const G = AH.G, P = G.player;
+    updateDialogue(dt);
+    if (!G.mission || G.dialogue) return;
+    const st = G.mission.def.stages[G.mission.stage];
+    const tp = targetOf(st.at);
+    switch (st.t) {
+      case 'talk':
+        if (U.dist(P.x, P.y, tp.x, tp.y) < 78 && !P.inCar) startDialogue(st.lines);
+        break;
+      case 'goto':
+        if (U.dist(P.x, P.y, tp.x, tp.y) < 56) advance();
+        break;
+      case 'drive':
+        if (P.inCar && U.dist(P.x, P.y, tp.x, tp.y) < 84) advance();
+        break;
+      case 'timed':
+        G.mission.t -= dt;
+        if (P.inCar && U.dist(P.x, P.y, tp.x, tp.y) < 84) advance();
+        else if (G.mission.t <= 0) failMission('Out of time.');
+        break;
+      case 'escape':
+        if (G.wanted === 0) advance();
+        break;
+      case 'switch':
+        if (G.mission.switched) advance();
+        break;
+    }
   }
-}
+
+  function prompt() {
+    const G = AH.G;
+    if (G.mission || G.dialogue) return null;
+    const def = currentDef();
+    if (!def) return null;
+    const gp = AH.PLACES[def.giver], P = G.player;
+    if (P && U.dist(P.x, P.y, gp.x, gp.y) < 64) return 'E — Start mission: ' + def.title;
+    return null;
+  }
+
+  return { tryInteract, update, objective, prompt, failMission, currentDef, targetOf };
+})();

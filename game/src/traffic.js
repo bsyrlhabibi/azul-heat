@@ -1,108 +1,99 @@
-// traffic.js — fills the streets: parked cars in the lots world.js marked,
-// and ambient traffic that follows lanes, turns at junctions and brakes
-// for whatever is in front of it.
+'use strict';
+/* Azul Heat — ambient traffic. Cars pick a road, hold their lane, brake
+   for whoever is ahead and turn at intersections, so the city feels
+   alive and gives the player cars to steal. */
+AH.Traffic = (function () {
+  const R = AH.Rng, U = AH.U, C = AH.CFG;
 
-import { ROADS_V, ROADS_H, WORLD_W, WORLD_H, MODEL_KEYS } from './config.js';
-import { G, activeRunner } from './state.js';
-import { W } from './world.js';
-import { makeCar, stepCar, carSpeed } from './vehicles.js';
-import { makeRng, pick, randRange, clamp, angleDelta, dist } from './random.js';
-
-let rng = makeRng(99);
-const TRAFFIC_COLORS = ['#adb5bd', '#588157', '#7f5539', '#4a6fa5', '#e9ecef', '#bc6c25', '#ffd60a', '#e63946'];
-function newWaypoint(car) {
-  const ai = car.ai;
-  const junctions = ai.axis === 'v' ? ROADS_H : ROADS_V;
-  const pos = ai.axis === 'v' ? car.y : car.x;
-  const ahead = junctions.filter((j) => (j - pos) * ai.dir > 60);
-  const limit = ai.axis === 'v' ? WORLD_H : WORLD_W;
-  const target = ahead.length ? pick(rng, ahead) : (ai.dir > 0 ? limit - 80 : 80);
-  ai.wp = ai.axis === 'v' ? { x: car.x, y: target } : { x: target, y: car.y };
-  ai.turnAt = ahead.length ? target : null;
-}
-function spawnTrafficCar(x, y) {
-  const axis = rng() < 0.5 ? 'v' : 'h';
-  const line = axis === 'v' ? pick(rng, ROADS_V) : pick(rng, ROADS_H);
-  const dir = rng() < 0.5 ? 1 : -1;
-  const off = (axis === 'v' ? -dir : dir) * 24;
-  const px = axis === 'v' ? line + off : x, py = axis === 'v' ? y : line + off;
-  const model = pick(rng, MODEL_KEYS);
-  const car = makeCar(model, px, py, axis === 'v' ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI), {
-    color: pick(rng, TRAFFIC_COLORS), driver: 'traffic',
-  });
-  car.ai = { axis, dir, cruise: randRange(rng, 78, 122), wp: null, turnAt: null };
-  newWaypoint(car);
-  return car;
-}
-
-export function initTraffic(seed) {
-  rng = makeRng(seed * 31 + 7);
-  for (const spot of W.parkingSpots) {
-    if (rng() < 0.42) continue;
-    const model = pick(rng, MODEL_KEYS);
-    const car = makeCar(model, spot.x, spot.y, spot.angle + (rng() < 0.5 ? 0 : Math.PI), { parked: true });
-    car.color = pick(rng, car.def.colors);
-    G.cars.push(car);
+  function laneTarget(car) {
+    // returns the point the car is steering toward: far ahead in its lane
+    const ahead = 260;
+    return { x: car.x + Math.cos(car.ang) * ahead, y: car.y + Math.sin(car.ang) * ahead };
   }
-  for (let i = 0; i < 15; i++)
-    G.cars.push(spawnTrafficCar(randRange(rng, 400, WORLD_W - 200), randRange(rng, 200, WORLD_H - 200)));
-}
 
-function obstacleAhead(car) {
-  const fx = Math.cos(car.angle), fy = Math.sin(car.angle);
-  let nearest = 999;
-  const test = (o, r) => {
-    const dx = o.x - car.x, dy = o.y - car.y;
-    const fwd = dx * fx + dy * fy, lat = Math.abs(-dx * fy + dy * fx);
-    if (fwd > 0 && fwd < 95 && lat < r && fwd < nearest) nearest = fwd;
-  };
-  for (const o of G.cars) if (o !== car && !o.dead) test(o, 24);
-  for (const p of G.peds) test(p, 15);
-  const r = activeRunner();
-  if (!r.car) test(r, 15);
-  return nearest;
-}
+  function spawnOne(farFrom) {
+    const p = AH.World.randomRoadPoint();
+    if (farFrom && U.dist(p.x, p.y, farFrom.x, farFrom.y) < 700) return null;
+    // never materialise inside an intersection — crossing spawns wedge
+    for (const rx of C.vRoads) for (const ry of C.hRoads)
+      if (Math.abs(p.x - rx) < 96 && Math.abs(p.y - ry) < 96) return null;
+    const onV = C.vRoads.some(rx => Math.abs(p.x - rx) < 40);
+    const dir = R.chance(0.5) ? 1 : -1;
+    const lane = 27 * dir;   // right-hand traffic
+    const car = AH.Vehicles.makeCar(
+      onV ? p.x + (Math.abs(p.x - Math.round(p.x)) >= 0 ? lane * (p.x > 0 ? 1 : 1) : 0) : p.x,
+      p.y, 0, R.int(0, 5), 'traffic');
+    if (onV) { const rx = C.vRoads.reduce((a, b) => Math.abs(b - p.x) < Math.abs(a - p.x) ? b : a); car.x = rx - lane; car.ang = dir > 0 ? Math.PI / 2 : -Math.PI / 2; }
+    else { const ry = C.hRoads.reduce((a, b) => Math.abs(b - p.y) < Math.abs(a - p.y) ? b : a); car.y = ry + lane; car.ang = dir > 0 ? 0 : Math.PI; }
+    car.cruise = R.range(120, 195);
+    car.driver = { kind: 'civilian' };
+    return car;
+  }
 
-export function updateTraffic(dt) {
-  const player = activeRunner();
-  for (const car of G.cars) {
-    if (car.driver !== 'traffic' || car.dead) continue;
-    const ai = car.ai;
-    // Recycle cars that drift too far from the action.
-    if (dist(car.x, car.y, player.x, player.y) > 1750) {
-      const fresh = spawnTrafficCar(player.x + randRange(rng, -1200, 1200), player.y + randRange(rng, -1200, 1200));
-      car.x = fresh.x; car.y = fresh.y; car.angle = fresh.angle; car.ai = fresh.ai; car.vx = car.vy = 0;
-      continue;
+  function populate() {
+    const G = AH.G;
+    for (let i = 0; i < 24; i++) { const c = spawnOne(null); if (c) G.cars.push(c); }
+  }
+
+  function nearestIntersection(x, y) {
+    let best = null, bd = 1e12;
+    for (const rx of C.vRoads) for (const ry of C.hRoads) {
+      const d = (rx - x) * (rx - x) + (ry - y) * (ry - y);
+      if (d < bd) { bd = d; best = { x: rx, y: ry }; }
     }
-    const wp = ai.wp;
-    const d = dist(car.x, car.y, wp.x, wp.y);
-    if (d < 46) {
-      // At a junction: sometimes turn onto the crossing road.
-      if (ai.turnAt !== null && rng() < 0.42) {
-        ai.axis = ai.axis === 'v' ? 'h' : 'v';
-        ai.dir = rng() < 0.5 ? 1 : -1;
+    return best;
+  }
+
+  function update(dt) {
+    const G = AH.G, P = G.player;
+    let trafficCount = 0;
+    for (const car of G.cars) {
+      if (car.mode !== 'traffic') continue;
+      trafficCount++;
+      const dP = P ? U.dist(car.x, car.y, P.x, P.y) : 9999;
+      if (dP > 2400) { // recycle far-away traffic near the player instead
+        const c = spawnOne(P); if (c) { Object.assign(car, c); }
+        continue;
       }
-      newWaypoint(car);
+      // obstacle scan straight ahead
+      let blocked = false;
+      const fx = car.x + Math.cos(car.ang) * 74, fy = car.y + Math.sin(car.ang) * 74;
+      for (const o of G.cars) {
+        if (o === car) continue;
+        if (U.dist2(o.x, o.y, fx, fy) < 52 * 52) { blocked = true; break; }
+      }
+      if (!blocked && P && P.inCar !== car && U.dist2(P.x, P.y, fx, fy) < 46 * 46) blocked = true;
+      // turn at intersections sometimes
+      const inter = nearestIntersection(car.x, car.y);
+      let steer = 0;
+      if (inter && U.dist(car.x, car.y, inter.x, inter.y) < 30 && !car.turnCd) {
+        car.turnCd = 2.4;
+        if (R.chance(0.42)) {
+          const turn = R.chance(0.5) ? Math.PI / 2 : -Math.PI / 2;
+          car.targetAng = car.ang + turn;
+        }
+      }
+      car.turnCd = Math.max(0, (car.turnCd || 0) - dt);
+      if (car.targetAng !== undefined && car.targetAng !== null) {
+        const diff = U.angDiff(car.targetAng, car.ang);
+        steer = U.clamp(diff * 2.2, -1, 1);
+        if (Math.abs(diff) < 0.05) car.targetAng = null;
+      } else {
+        // hold lane centre: steer back toward the road line
+        const onV = Math.abs(Math.sin(car.ang)) > 0.7;
+        if (onV) { const rx = C.vRoads.reduce((a, b) => Math.abs(b - car.x) < Math.abs(a - car.x) ? b : a); steer = U.clamp((rx - Math.sign(Math.sin(car.ang)) * 27 - car.x) * 0.01, -0.4, 0.4); }
+        else { const ry = C.hRoads.reduce((a, b) => Math.abs(b - car.y) < Math.abs(a - car.y) ? b : a); steer = U.clamp((ry + Math.sign(Math.cos(car.ang)) * 27 - car.y) * 0.01, -0.4, 0.4); }
+      }
+      // unstick: a car held up too long backs out and tries again
+      if (blocked && Math.abs(car.speed) < 12) car.stuckT = (car.stuckT || 0) + dt; else car.stuckT = 0;
+      if (car.stuckT > 2.2) { car.stuckT = 0; car.unstick = 0.75; }
+      car.unstick = Math.max(0, (car.unstick || 0) - dt);
+      const throttle = car.unstick > 0 ? -0.85 : (blocked ? -0.4 : (car.speed < car.cruise ? 0.75 : 0));
+      AH.Vehicles.drive(car, dt, throttle, car.unstick > 0 ? -steer : steer, blocked && car.speed > 4 && car.unstick <= 0);
+      if (blocked && car.speed < 4 && R.chance(dt * 0.2)) AH.Audio.honk();
     }
-    // Settle into the correct lane for the current road.
-    if (ai.axis === 'v') {
-      const line = ROADS_V.reduce((a, b) => Math.abs(b - car.x) < Math.abs(a - car.x) ? b : a);
-      ai.wp.x = line + (-ai.dir) * 24;
-    } else {
-      const line = ROADS_H.reduce((a, b) => Math.abs(b - car.y) < Math.abs(a - car.y) ? b : a);
-      ai.wp.y = line + ai.dir * 24;
-    }
-    const desired = Math.atan2(ai.wp.y - car.y, ai.wp.x - car.x);
-    const steer = clamp(angleDelta(car.angle, desired) * 2.4, -1, 1);
-    const spd = carSpeed(car);
-    const obs = obstacleAhead(car);
-    let throttle = spd < ai.cruise ? 0.65 : 0;
-    if (obs < 42) throttle = -0.7; else if (obs < 95) throttle = Math.min(throttle, 0.02);
-    stepCar(car, dt, { throttle, steer, handbrake: false });
-    // A badly smashed traffic car stops and its driver bails out on foot.
-    if (car.hp < car.maxHp * 0.35) {
-      car.driver = null; car.parked = true;
-      G.peds.push({ x: car.x + 20, y: car.y + 14, angle: car.angle, walk: 0, flee: 3.5, speed: 120, skin: '#9a6a42', top: '#5b8e7d', bottom: '#33383f', hair: '#201812', panic: true });
-    }
+    if (trafficCount < 20 && P) { const c = spawnOne(P); if (c) AH.G.cars.push(c); }
   }
-}
+
+  return { populate, update };
+})();
